@@ -163,7 +163,7 @@ WEAPON_VALUE = {"laser": 3, "lightning": 2, "mortar": 0, "gun": 0}
 
 
 class Bot:
-    name = "vmech"
+    name = "vmech-v2"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -405,6 +405,26 @@ class Bot:
             hot = (t - self.attackers.get(m["id"], -99)) < 4.0
             enemies.append({"m": m, "d": d, "vis": vis, "hot": hot, "sz": sz})
         n_close = sum(1 for e in enemies if e["d"] < 160)
+        alive = obs.get("alive", 16)
+        late = alive <= 5
+
+        # ---- FFA discipline: only fight mechs that are a threat to us, or easy kills
+        def aimed_at_me(m):
+            p = m["pos"]
+            b = math.atan2(y - p[1], x - p[0])
+            return abs(wrap(m.get("aim", [9, 0])[0] - b)) < 0.14
+
+        for e in enemies:
+            m = e["m"]
+            d = e["d"]
+            close = 40.0 if late else 60.0
+            threat = e["hot"] or (e["vis"] and d < close) or (e["vis"] and d < 160 and aimed_at_me(m) and (m.get("charging") or d < 110))
+            weak = m.get("hp", 1400) < 0.25 * m.get("max_hp", 1400) and hpf > 0.6 and d < 150 and e["vis"]
+            if weak:
+                p = m["pos"]
+                others = sum(1 for o in enemies if o is not e and hyp(o["m"]["pos"][0] - p[0], o["m"]["pos"][1] - p[1]) < 90)
+                weak = others == 0 and not late
+            e["engage"] = bool(threat or weak)
 
         # ---- target choice
         target = None
@@ -416,6 +436,8 @@ class Bot:
                     s -= 60
                 if e["hot"]:
                     s -= 50
+                if e.get("engage"):
+                    s -= 100
                 return s
             target = min(enemies, key=score)
 
@@ -458,7 +480,17 @@ class Bot:
                 ax_, ay_ = math.cos(away) + 0.5 * zx / max(1, hyp(zx, zy)), math.sin(away) + 0.5 * zy / max(1, hyp(zx, zy))
                 move_yaw = math.atan2(ay_, ax_) + self.side * 0.5
             boost = energy > 20
-        elif target is not None and (target["vis"] or target["hot"] or target["d"] < 120):
+        elif target is not None and not target["engage"] and target["vis"] and target["d"] < 150:
+            # someone else's fight or a bot not looking at us: get out of its sight, quietly
+            mode = "avoid"
+            cov = self.find_cover(obs, [e for e in enemies if e["vis"]], (fx, fy, fr), t_start)
+            if cov is not None:
+                gx, gy = cov
+            else:
+                tp = target["m"]["pos"]
+                move_yaw = math.atan2(y - tp[1], x - tp[0])
+            move_mag = 1.0 if target["d"] < 70 else 0.42
+        elif target is not None and target["engage"]:
             mode = "fight"
             m = target["m"]
             tp = m["pos"]
@@ -518,12 +550,21 @@ class Bot:
                     move_mag = 0.3
                 elif mode == "loot" and dd < 6:
                     move_mag = 0.6
+        if gx is not None and mode == "avoid" and move_mag < 1.0:
+            pass  # keep the quiet walk speed set above
         if mode == "hold":
-            # drift slowly (silent, < step_speed) toward the safe-circle center
-            dx, dy = fx - x, fy - y
-            if hyp(dx, dy) > fr * 0.35:
-                move_yaw = math.atan2(dy, dx)
-                move_mag = 0.38
+            # hold a quiet spot between us and the safe-circle center, ~half the radius out:
+            # away from the crowded middle, but never near the edge
+            dx, dy = x - fx, y - fy
+            dl = hyp(dx, dy)
+            ring = fr * 0.5
+            if dl > 1:
+                hx, hy = fx + dx / dl * ring, fy + dy / dl * ring
+            else:
+                hx, hy = fx, fy
+            if hyp(hx - x, hy - y) > 6 and dl > ring * 0.8:
+                move_yaw = math.atan2(hy - y, hx - x)
+                move_mag = 0.38  # 0.38 * 11.7 m/s < step_speed: no footsteps
             else:
                 move_yaw, move_mag = 0.0, 0.0
 
@@ -563,9 +604,15 @@ class Bot:
         fire = [False, False]
         aim = None
         shoot = None  # (pos, vel, height, kind)
-        if target is not None and (target["vis"] or target["d"] < 230):
+        hold_fire = False
+        if target is not None and (target["vis"] or target["d"] < 230) and (target["engage"] or mode == "retreat"):
             m = target["m"]
             shoot = (m["pos"], m["vel"], 4.5 * target["sz"], "mech", target["vis"])
+        elif target is not None and target["vis"] and target["d"] < 150:
+            # face it (front armor) but stay silent
+            m = target["m"]
+            shoot = (m["pos"], m["vel"], 4.5 * target["sz"], "mech", target["vis"])
+            hold_fire = True
         elif mode in ("loot", "hold", "zone", "drop"):
             shoot = self.pick_soft_target(obs, me, npcs, hpf, enemies)
 
@@ -654,6 +701,10 @@ class Bot:
         pmin, pmax = self.cfg["mech"].get("min_pitch", -0.7), self.cfg["mech"].get("max_pitch", 1.3)
         aim[1] = max(pmin, min(pmax, aim[1]))
         act["aim"] = [round(aim[0], 4), round(aim[1], 4)]
+        if hold_fire:
+            fire = [False, False]
+            if laser is not None and (laser.get("charge", 0) or 0) > 0:
+                fire[laser_i] = True  # releasing would fire it; keep holding
         act["fire"] = fire
 
         # ---- reloads
@@ -715,6 +766,8 @@ class Bot:
         t = obs["t"]
         best, bs = None, 0.0
         threat_near = any(e["d"] < 90 for e in enemies)
+        # late in the match, walking around for loot is noise and exposure: only grab what's close
+        loot_r = 1e9 if t < 200 and obs.get("alive", 16) > 6 else 45.0
         for p in obs["pickups"]:
             v = self.wanted_pickup(p["kind"], me)
             if v <= 0 or t - self.take_fail.get(p["id"], -99) < 3:
@@ -723,6 +776,8 @@ class Bot:
             if abs(p["pos"][2] - z) > 25 or not self.in_safe(px, py, safe):
                 continue
             d = hyp(px - x, py - y)
+            if d > loot_r:
+                continue
             s = (60.0 * v) / (d + 15)
             if s > bs:
                 best, bs = (px, py), s
@@ -731,6 +786,8 @@ class Bot:
             if abs(c["pos"][2] - z) > 25 or not self.in_safe(px, py, safe):
                 continue
             d = hyp(px - x, py - y)
+            if d > loot_r:
+                continue
             s = 50.0 / (d + 15)
             if s > bs:
                 best, bs = (px, py), s
@@ -742,6 +799,8 @@ class Bot:
             if abs(pz - z) > 15 or not self.in_safe(px, py, safe):
                 continue
             d = hyp(px - x, py - y)
+            if d > loot_r:
+                continue
             if d < 22:
                 continue
             s = 20.0 / (d + 15)
@@ -763,6 +822,8 @@ class Bot:
                 continue
             if dr.get("holder") not in (None, me["id"]):
                 continue
+            if obs.get("alive", 16) <= 5 and any(e["vis"] for e in enemies):
+                continue
             return (px, py)
         return None
 
@@ -771,10 +832,11 @@ class Bot:
         M = self.map
         eye = z + me["stats"].get("eye_height", 8.0)
         best = None
+        late = obs["t"] > 200 or obs.get("alive", 16) <= 6
         for n in npcs:
             p = n["pos"]
             d = hyp(p[0] - x, p[1] - y)
-            if d > 110:
+            if d > (40 if late else 110):
                 continue
             if hpf < 0.45 and d > 30:
                 continue
@@ -787,7 +849,7 @@ class Bot:
             for c in obs["crates"]:
                 p = c["pos"]
                 d = hyp(p[0] - x, p[1] - y)
-                if d > 60:
+                if d > (30 if late else 60):
                     continue
                 if M is not None and not M.los(x, y, eye, p[0], p[1], p[2] + 1.2):
                     continue
