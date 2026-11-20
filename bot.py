@@ -161,9 +161,18 @@ UPGRADE_PRIORITY = [
 ]
 WEAPON_VALUE = {"laser": 3, "lightning": 2, "mortar": 0, "gun": 0}
 
+# tunables (tested in the local simulator)
+ENGAGE_CLOSE = 60.0
+ENGAGE_CLOSE_LATE = 40.0
+AIMED_RANGE = 160.0
+WEAK_FRAC = 0.25
+HOLD_RING = 0.7
+RETREAT_HP = 0.45
+AVOID_RANGE = 150.0
+
 
 class Bot:
-    name = "vmech-v2"
+    name = "vmech-v3"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -417,9 +426,9 @@ class Bot:
         for e in enemies:
             m = e["m"]
             d = e["d"]
-            close = 40.0 if late else 60.0
-            threat = e["hot"] or (e["vis"] and d < close) or (e["vis"] and d < 160 and aimed_at_me(m) and (m.get("charging") or d < 110))
-            weak = m.get("hp", 1400) < 0.25 * m.get("max_hp", 1400) and hpf > 0.6 and d < 150 and e["vis"]
+            close = ENGAGE_CLOSE_LATE if late else ENGAGE_CLOSE
+            threat = e["hot"] or (e["vis"] and d < close) or (e["vis"] and d < AIMED_RANGE and aimed_at_me(m) and (m.get("charging") or d < 110))
+            weak = m.get("hp", 1400) < WEAK_FRAC * m.get("max_hp", 1400) and hpf > 0.6 and d < 150 and e["vis"]
             if weak:
                 p = m["pos"]
                 others = sum(1 for o in enemies if o is not e and hyp(o["m"]["pos"][0] - p[0], o["m"]["pos"][1] - p[1]) < 90)
@@ -447,7 +456,7 @@ class Bot:
             th = target["m"].get("hp", 1400)
             outnumbered = sum(1 for e in enemies if e["d"] < 140 and (e["vis"] or e["hot"])) >= 2
             if not self.retreating:
-                if (hpf < 0.32 and th > hp * 0.8) or (hpf < 0.5 and outnumbered) or (hpf < 0.2 and th > 200):
+                if (hpf < RETREAT_HP and th > hp * 0.8) or (hpf < 0.5 and outnumbered) or (hpf < 0.2 and th > 200):
                     self.retreating = True
             else:
                 if hpf > 0.8 or (th < hp * 0.35 and not outnumbered) or (t - self.last_dmg_t > 12 and hpf > 0.6):
@@ -480,7 +489,7 @@ class Bot:
                 ax_, ay_ = math.cos(away) + 0.5 * zx / max(1, hyp(zx, zy)), math.sin(away) + 0.5 * zy / max(1, hyp(zx, zy))
                 move_yaw = math.atan2(ay_, ax_) + self.side * 0.5
             boost = energy > 20
-        elif target is not None and not target["engage"] and target["vis"] and target["d"] < 150:
+        elif target is not None and not target["engage"] and target["vis"] and target["d"] < AVOID_RANGE:
             # someone else's fight or a bot not looking at us: get out of its sight, quietly
             mode = "avoid"
             cov = self.find_cover(obs, [e for e in enemies if e["vis"]], (fx, fy, fr), t_start)
@@ -557,7 +566,7 @@ class Bot:
             # away from the crowded middle, but never near the edge
             dx, dy = x - fx, y - fy
             dl = hyp(dx, dy)
-            ring = fr * 0.5
+            ring = fr * HOLD_RING
             if dl > 1:
                 hx, hy = fx + dx / dl * ring, fy + dy / dl * ring
             else:
