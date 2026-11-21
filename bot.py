@@ -177,7 +177,9 @@ STRAFE_MAX = 1.25
 FLIP_P = 0.6
 AIM_TOL = 2.0
 FIGHT_BOOST_E = 45.0
-STRAFE_W = 0.95    # 1: shoot back at a hot mech while breaking line of sight
+STRAFE_W = 0.95
+NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
+NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
@@ -220,6 +222,10 @@ class Bot:
         self.take_fail = {}       # pickup id -> time
         self.crate_hits = {}
         self.slow = 0
+        self.nook = None          # chosen (x, y)
+        self.nook_t = -99.0
+        self.nook_cands = []      # pending [(x, y)]
+        self.nook_scored = []     # [(score, x, y)]
 
     # ------------------------------------------------------------ world model
     def zone_at(self, z, t):
@@ -584,7 +590,17 @@ class Bot:
                 hx, hy = fx + dx / dl * ring, fy + dy / dl * ring
             else:
                 hx, hy = fx, fy
-            if hyp(hx - x, hy - y) > 6 and dl > ring * 0.8:
+            if NOOK and M is not None:
+                ax_, ay_ = (hx, hy) if dl > ring * 0.8 else (x, y)
+                nk = self.update_nook(obs, me, (fx, fy, fr), ax_, ay_, t_start)
+                if nk is not None:
+                    hx, hy = nk
+                if hyp(hx - x, hy - y) > 2.5:
+                    move_yaw = math.atan2(hy - y, hx - x)
+                    move_mag = 0.38
+                else:
+                    move_yaw, move_mag = 0.0, 0.0
+            elif hyp(hx - x, hy - y) > 6 and dl > ring * 0.8:
                 move_yaw = math.atan2(hy - y, hx - x)
                 move_mag = 0.38  # 0.38 * 11.7 m/s < step_speed: no footsteps
             else:
@@ -762,6 +778,51 @@ class Bot:
         if tt < 0 or tt > 6:
             return None
         return px + vx * tt, py + vy * tt
+
+    def exposure(self, px, py):
+        """How many of 16 ring positions (70 m and 130 m out) can see a mech standing here."""
+        M = self.map
+        pz = M.gz(px, py)
+        n = 0
+        for r in (70.0, 130.0):
+            for k in range(8):
+                a = k * PI / 4 + (0.39 if r > 100 else 0.0)
+                ox, oy = px + math.cos(a) * r, py + math.sin(a) * r
+                if M.los(ox, oy, M.gz(ox, oy) + 8.0, px, py, pz + 4.5, 2.5):
+                    n += 1
+        return n
+
+    def update_nook(self, obs, me, safe, ax, ay, t_start):
+        """Incrementally score candidate spots around (ax, ay); keep the least exposed."""
+        M = self.map
+        t = obs["t"]
+        x, y, z = me["pos"]
+        fx, fy, fr = safe
+        if self.nook is not None:
+            nx_, ny_ = self.nook
+            if hyp(nx_ - fx, ny_ - fy) > fr * 0.85:
+                self.nook = None
+        if self.nook is not None and t - self.nook_t < 15 and not self.nook_cands:
+            return self.nook
+        if not self.nook_cands and not self.nook_scored:
+            cands = [(ax, ay)]
+            for r in (12.0, 24.0, NOOK_R):
+                for k in range(6):
+                    a = k * TAU / 6 + r * 0.05
+                    cands.append((ax + math.cos(a) * r, ay + math.sin(a) * r))
+            self.nook_cands = [c for c in cands
+                               if hyp(c[0] - fx, c[1] - fy) < fr * 0.85 and not M.blocked(c[0], c[1], M.gz(c[0], c[1]), 1.0)
+                               and M.top[M.idx(c[0], c[1])] < M.gz(c[0], c[1]) + 0.5]
+        while self.nook_cands and time.perf_counter() - t_start < 0.010:
+            cx_, cy_ = self.nook_cands.pop()
+            e = self.exposure(cx_, cy_)
+            self.nook_scored.append((e + hyp(cx_ - x, cy_ - y) / 40.0, cx_, cy_))
+        if not self.nook_cands and self.nook_scored:
+            sc, bx, by = min(self.nook_scored)
+            self.nook = (bx, by)
+            self.nook_t = t
+            self.nook_scored = []
+        return self.nook
 
     def in_safe(self, px, py, safe):
         fx, fy, fr = safe
