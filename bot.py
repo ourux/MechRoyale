@@ -195,11 +195,11 @@ DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before ot
 LOOT_SCAN = 0.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
-LASER_SNAP = 0.0     # 1: once the laser is >=80% charged, aim at its hitscan point (not the gun lead) so it releases
-FINISH_BONUS = 0.0   # practice: extra target priority for a visible hunter under 35% HP
+LASER_SNAP = 1.0     # 1: once the laser is >=80% charged, aim at its hitscan point (not the gun lead) so it releases
+FINISH_BONUS = 1.0   # practice: extra target priority for a visible hunter under 35% HP
 RETREAT_HOLD = 0.0   # 1: hold fire while retreating (still facing the attacker) so the regen timer can start
 OUTNUM_HP = 0.5      # retreat when outnumbered below this HP fraction
-RETREAT_LASER = 1.0  # 1: may charge the laser while retreating (halves speed)
+RETREAT_LASER = 0.0  # 1: may charge the laser while retreating (halves speed)
 COVER_THREATS = 2    # how many nearby threats cover must hide from
 HUNT_LONE = 1.0      # V: hunt mechs that are alone, keep moving until one is found; never turn away from a shooter
 HUNT_HP = 0.60
@@ -211,7 +211,7 @@ FLEE_FFA = 0.0       # once a free-for-all is detected: run from anyone approach
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
-SEED_SALT = 15        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 16        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
