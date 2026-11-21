@@ -225,11 +225,11 @@ TOPOFF = 1.0         # reload a partial mag when no enemy is known
 RETREAT_DUMP = 1.0   # release a laser charge right away when retreating
 ISOLATE = 1.0        # with 2+ hunters in view, strafe to the side that breaks line of sight to the others and keeps it on the target
 ISO_STEP = 10.0
-COVER_FIGHT = 1.0    # anchor fights near cover corners, isolate 1v2+ angles, duck enemy lasers and dry reloads
+COVER_FIGHT = 0.0    # anchor fights near cover corners, isolate 1v2+ angles, duck enemy lasers and dry reloads
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 51        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 52        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
