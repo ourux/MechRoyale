@@ -220,10 +220,13 @@ STUCK_FIX = 1.0      # no stuck-jet from low net displacement while strafing in 
 HIGH_AIM = 1.0       # if the waist is behind cover, aim at the upper body when that has line of sight
 SOFT_WAIT = 0.0      # don't shoot NPCs/crates within 3 s of taking damage (turn to the shooter instead)
 NO_NPC_LASER = 0.0   # never charge the laser on NPC drones
+FINISH_FIRST = 1.0   # don't take the outnumbered retreat while a visible target is under 260 HP (and we are > 25%)
+TOPOFF = 1.0         # reload a partial mag when no enemy is known
+RETREAT_DUMP = 1.0   # release a laser charge right away when retreating
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 40        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 41        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -578,7 +581,7 @@ class Bot:
             th = target["m"].get("hp", 1400)
             outnumbered = sum(1 for e in enemies if e["d"] < 140 and (e["vis"] or e["hot"])) >= 2
             if not self.retreating:
-                if (hpf < RETREAT_HP and th > hp * 0.8) or (hpf < OUTNUM_HP and outnumbered) or (hpf < 0.2 and th > 200):
+                if (hpf < RETREAT_HP and th > hp * 0.8) or (hpf < OUTNUM_HP and outnumbered and not (FINISH_FIRST and target["vis"] and th < 260 and hpf > 0.25)) or (hpf < 0.2 and th > 200):
                     self.retreating = True
             else:
                 if hpf > 0.8 or (th < hp * 0.35 and not outnumbered) or (t - self.last_dmg_t > 12 and hpf > 0.6):
@@ -886,7 +889,9 @@ class Bot:
                         if any((w_ == "mortar" or (isinstance(w_, dict) and w_.get("kind") == "mortar")) for w_ in target["m"].get("weapons", [])):
                             dmg *= 1 + lst.get("cookoff", 0.6)
                         lethal = dmg * 0.8 >= target["m"]["hp"]
-                    if (charge >= lfull * 0.97 or lethal) and l_los and lerr < 1.6:
+                    if RETREAT_DUMP and mode == "retreat" and charge >= lst.get("min_charge", 0.15):
+                        fire[laser_i] = False  # dump it: get full escape speed back
+                    elif (charge >= lfull * 0.97 or lethal) and l_los and lerr < 1.6:
                         fire[laser_i] = False  # release -> fire
                     elif charge > hold_max - 0.25 and l_los and lerr < 3.0:
                         fire[laser_i] = False
@@ -966,7 +971,7 @@ class Bot:
         if gun is not None and gun.get("reload", 0) <= 0:
             ammo = gun.get("ammo", 0)
             mag = gun["stats"].get("mag", 12)
-            if ammo == 0 or (ammo < mag * 0.5 and not fire[gun_i] and (target is None or not target["vis"])):
+            if ammo == 0 or (ammo < mag * 0.5 and not fire[gun_i] and (target is None or not target["vis"])) or (TOPOFF and ammo < mag and not fire[gun_i] and target is None):
                 act["reload"] = True
 
         # ---- pickups
