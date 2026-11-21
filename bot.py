@@ -214,9 +214,9 @@ HIDE_UNTIL_ALIVE = 3
 DODGE = 1.0          # dodge incoming bullets (closest approach < radius within 0.7 s) and laser charges aimed at us
 DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
-THREAT_BOOST = 30.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
+THREAT_BOOST = 55.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 30        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 31        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -773,7 +773,7 @@ class Bot:
                 if tc <= 0 or tc > 0.7:
                     continue
                 mxx, myy = pp[0] + pv[0] * tc - x, pp[1] + pv[1] * tc - y
-                if hyp(mxx, myy) < reach_:
+                if hyp(mxx, myy) < reach_ and abs(pp[2] + pv[2] * tc - cz_) < st_.get("height", 9.0) * 0.6:
                     vh = hyp(pv[0], pv[1])
                     if vh < 1:
                         continue
@@ -798,7 +798,9 @@ class Bot:
                 l2 = hyp(mx_, my_)
                 if l2 > 1:
                     mx_, my_ = mx_ / l2, my_ / l2
-                act["move"] = [round(mx_, 3), round(my_, 3)]
+                mag_ = min(1.0, hyp(mx_, my_))
+                a2_, _ = self.steer(me, math.atan2(my_, mx_), t)
+                act["move"] = [round(math.cos(a2_) * mag_, 3), round(math.sin(a2_) * mag_, 3)]
                 if (laser_ and energy > 25) or (DODGE_BOOST and energy > DODGE_BOOST):
                     act["boost"] = True
 
@@ -843,10 +845,10 @@ class Bot:
                 charge = laser.get("charge", 0) or 0
                 l_los = M is None or M.los(x, y, mz, LP[0], LP[1], LP[2], step=2.0)
                 worth = kind == "mech" or kind == "npc"
+                lethal = False
                 if charge > 0:
                     hold_max = lfull + self.cfg["weapons"]["laser"].get("hold_s", 2.0)
                     lst = laser["stats"]
-                    lethal = False
                     if LETHAL and kind == "mech" and target is not None and target["m"].get("hp") is not None and charge >= lst.get("min_charge", 0.15):
                         ccfg = self.cfg.get("cubes", {})
                         dmg = lst.get("damage", 315) * (lst.get("min_frac", 0.35) + (1 - lst.get("min_frac", 0.35)) * min(1.0, charge / lfull))
@@ -866,7 +868,7 @@ class Bot:
                     fire[laser_i] = True
                 if kind == "mech" and laser_i is not None and gun is None:
                     aim = [ly, lp]
-                elif LASER_SNAP and kind == "mech" and charge >= lfull * 0.8 and l_los:
+                elif LASER_SNAP and kind == "mech" and (charge >= lfull * 0.8 or lethal) and l_los:
                     aim = [ly, lp]
             if light is not None:
                 lst = light["stats"]
