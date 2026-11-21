@@ -140,6 +140,37 @@ class Map:
                 return False
         return True
 
+    def roof_spots(self, min_h=8.0, max_h=45.0, step=3.0, min_depth=6.0):
+        """Flat roof points at least min_depth m from any edge: hidden from nearby ground bots."""
+        if getattr(self, "_roofs", None) is not None:
+            return self._roofs
+        out = []
+        T, B, G = self.top, self.base, self.ground
+        dirs = [(math.cos(a * PI / 4), math.sin(a * PI / 4)) for a in range(8)]
+        y = self.by0 + 10
+        while y < self.by1 - 10:
+            x = self.bx0 + 10
+            while x < self.bx1 - 10:
+                k = self.idx(x, y)
+                tp, g = T[k], G[k]
+                h = tp - g
+                if min_h <= h <= max_h and B[k] < g + 3:
+                    depth = 99.0
+                    for (c, s_) in dirs:
+                        for r in (3.0, 6.0, 9.0, 12.0, 16.0):
+                            k2 = self.idx(x + c * r, y + s_ * r)
+                            if abs(T[k2] - tp) > 1.0:
+                                depth = min(depth, r)
+                                break
+                        if depth < min_depth:
+                            break
+                    if depth >= min_depth:
+                        out.append((x, y, tp, depth))
+                x += step
+            y += step
+        self._roofs = out
+        return out
+
     def blocked(self, x, y, fz, d=1.0):
         if x < self.bx0 or x > self.bx1 or y < self.by0 or y > self.by1:
             return True
@@ -169,6 +200,8 @@ WEAK_FRAC = 0.25
 HOLD_RING = 0.7
 RETREAT_HP = 0.45
 AVOID_RANGE = 150.0
+ROOF = 1.0          # hold on a rooftop inside the safe circle when one is reachable
+ROOF_MAX_CLIMB = 40.0
 
 
 class Bot:
@@ -211,6 +244,15 @@ class Bot:
         self.take_fail = {}       # pickup id -> time
         self.crate_hits = {}
         self.slow = 0
+        self.roof = None          # (x, y, top)
+        self.roof_t = -99.0
+        self.on_roof = False
+        self.roofs = []
+        if self.map is not None and ROOF:
+            try:
+                self.roofs = self.map.roof_spots()
+            except Exception as e:
+                mf.log("roof scan failed:", repr(e))
 
     # ------------------------------------------------------------ world model
     def zone_at(self, z, t):
@@ -277,6 +319,11 @@ class Bot:
             return True
         c, s = math.cos(yaw), math.sin(yaw)
         px, py = -s, c
+        if self.on_roof:
+            # don't walk off the roof we're holding
+            for dist in (3.5, 6.0):
+                if M.surface(x + c * dist, y + s * dist, fz + 1.0) < fz - 2.5:
+                    return False
         for dist in (3.0, 6.0, 9.0):
             bx, by = x + c * dist, y + s * dist
             if M.blocked(bx, by, fz, dist):
@@ -354,6 +401,9 @@ class Bot:
         x, y, z = me["pos"]
         act = {"tick": obs["tick"]}
         self.update_tracks(obs)
+        if M_ := self.map:
+            k_ = M_.idx(x, y)
+            self.on_roof = bool(me["grounded"] and M_.top[k_] > M_.ground[k_] + 6 and abs(M_.top[k_] - z) < 1.0)
         stats = me["stats"]
         maxhp = me["max_hp"]
         hp = me["hp"]
@@ -561,6 +611,27 @@ class Bot:
                     move_mag = 0.6
         if gx is not None and mode == "avoid" and move_mag < 1.0:
             pass  # keep the quiet walk speed set above
+        roof_climb = False
+        if mode == "hold" and ROOF and self.roofs:
+            spot = self.pick_roof(obs, me, (fx, fy, fr))
+            if spot is not None:
+                mode = "roof"
+                rx, ry, rtop = spot
+                dd = hyp(rx - x, ry - y)
+                if self.on_roof and dd < 3.0:
+                    move_yaw, move_mag = 0.0, 0.0
+                else:
+                    move_yaw = math.atan2(ry - y, rx - x)
+                    move_mag = 1.0 if dd > 25 else 0.6
+                    # climb when the roof's wall is right ahead and we have the energy
+                    if z < rtop - 0.8:
+                        ahead = M.top[M.idx(x + math.cos(move_yaw) * 4.5, y + math.sin(move_yaw) * 4.5)]
+                        need = (rtop - z) * 1.6 + 12
+                        if abs(ahead - rtop) < 1.5:
+                            if energy >= min(me["max_energy"] - 1, need) or not me["grounded"]:
+                                roof_climb = True
+                            else:
+                                move_mag = 0.0  # wait at the wall for energy
         if mode == "hold":
             # hold a quiet spot between us and the safe-circle center, ~half the radius out:
             # away from the crowded middle, but never near the edge
@@ -579,7 +650,16 @@ class Bot:
 
         # charging the laser halves speed; that's accepted.
         jump = False
-        if move_yaw is not None and move_mag > 0:
+        if roof_climb:
+            act["move"] = [round(math.cos(move_yaw), 3), round(math.sin(move_yaw), 3)]
+            act["boost"] = energy > 2
+            act["jump"] = bool(me["grounded"])
+            move_yaw = None  # handled
+            boost = act["boost"]
+            jump = act["jump"]
+        if roof_climb:
+            pass
+        elif move_yaw is not None and move_mag > 0:
             sy, ok = self.steer(me, move_yaw, t)
             moved = 99.0
             if len(self.hist) > 5 and t - self.hist[0][0] > 0.9:
@@ -592,7 +672,7 @@ class Bot:
                 boost = energy > 5
                 sy = move_yaw
             act["move"] = [round(math.cos(sy) * move_mag, 3), round(math.sin(sy) * move_mag, 3)]
-        else:
+        elif not roof_climb:
             act["move"] = [0.0, 0.0]
         act["boost"] = bool(boost and act["move"] != [0.0, 0.0])
         act["jump"] = jump
@@ -749,6 +829,37 @@ class Bot:
         if tt < 0 or tt > 6:
             return None
         return px + vx * tt, py + vy * tt
+
+    def pick_roof(self, obs, me, safe):
+        """Choose (and stick with) a deep roof spot inside the safe circle we can climb to."""
+        x, y, z = me["pos"]
+        t = obs["t"]
+        fx, fy, fr = safe
+        if self.roof is not None:
+            rx, ry, rtop = self.roof
+            if hyp(rx - fx, ry - fy) < fr * 0.9 and t - self.roof_t < 30:
+                return self.roof
+        best, bs = None, -1e9
+        lim = fr * 0.85
+        for (rx, ry, rtop, depth) in self.roofs:
+            dz = hyp(rx - fx, ry - fy)
+            if dz > lim:
+                continue
+            if rtop - z > ROOF_MAX_CLIMB:
+                continue
+            d = hyp(rx - x, ry - y)
+            if d > 260:
+                continue
+            s = depth * 2.0 - d * 0.12 - dz / max(1.0, fr) * 10
+            if s > bs:
+                best, bs = (rx, ry, rtop), s
+        if best is not None:
+            if self.roof is None or best[:2] != self.roof[:2]:
+                self.roof_t = t
+            self.roof = best
+        else:
+            self.roof = None
+        return self.roof
 
     def in_safe(self, px, py, safe):
         fx, fy, fr = safe
