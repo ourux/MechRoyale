@@ -213,7 +213,7 @@ HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
 DODGE = 1.0          # dodge incoming bullets (closest approach < radius within 0.7 s) and laser charges aimed at us
 DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
-SEED_SALT = 27        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 28        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
