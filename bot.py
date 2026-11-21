@@ -182,13 +182,16 @@ AIM_TOL = 3.0
 FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
 RELOAD_COVER = 0.0  # 1: break line of sight while the gun reloads (and the laser is not ready)
+HIDE = 1.0           # hide until the end game: fight back only at close range, avoid everyone else
+HIDE_UNTIL_T = 380.0
+HIDE_UNTIL_ALIVE = 3
 SEED_SALT = 1        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-v4s1"
+    name = "vmech-hide"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -439,6 +442,7 @@ class Bot:
             hot = (t - self.attackers.get(m["id"], -99)) < 4.0
             enemies.append({"m": m, "d": d, "vis": vis, "hot": hot, "sz": sz})
         n_close = sum(1 for e in enemies if e["d"] < 160)
+        hiding = bool(HIDE) and t < HIDE_UNTIL_T and obs.get("alive", 16) > HIDE_UNTIL_ALIVE
         alive = obs.get("alive", 16)
         late = alive <= 5
 
@@ -457,7 +461,10 @@ class Bot:
                 hot = False
                 e["far_hot"] = True
             threat = hot or (e["vis"] and d < close) or (e["vis"] and d < AIMED_RANGE and aimed_at_me(m) and (m.get("charging") or d < 110))
-            weak = m.get("hp", 1400) < WEAK_FRAC * m.get("max_hp", 1400) and hpf > 0.6 and d < 150 and e["vis"]
+            if hiding:
+                # only fight what is already on top of us
+                threat = (hot and d < 70) or (e["vis"] and d < 35)
+            weak = m.get("hp", 1400) < WEAK_FRAC * m.get("max_hp", 1400) and hpf > 0.6 and d < 150 and e["vis"] and not hiding
             if weak:
                 p = m["pos"]
                 others = sum(1 for o in enemies if o is not e and hyp(o["m"]["pos"][0] - p[0], o["m"]["pos"][1] - p[1]) < 90)
@@ -520,16 +527,16 @@ class Bot:
                 ax_, ay_ = math.cos(away) + 0.5 * zx / max(1, hyp(zx, zy)), math.sin(away) + 0.5 * zy / max(1, hyp(zx, zy))
                 move_yaw = math.atan2(ay_, ax_) + self.side * 0.5
             boost = energy > 20
-        elif target is not None and not target["engage"] and (target["vis"] or target.get("far_hot")) and (target["d"] < AVOID_RANGE or target.get("far_hot")):
+        elif target is not None and not target["engage"] and (target["vis"] or target.get("far_hot") or (hiding and target["hot"])) and (target["d"] < (220.0 if hiding else AVOID_RANGE) or target.get("far_hot") or (hiding and target["hot"])):
             # someone else's fight or a bot not looking at us: get out of its sight, quietly
             mode = "avoid"
-            cov = self.find_cover(obs, [e for e in enemies if e["vis"]], (fx, fy, fr), t_start)
+            cov = self.find_cover(obs, [e for e in enemies if e["vis"]] or [target], (fx, fy, fr), t_start)
             if cov is not None:
                 gx, gy = cov
             else:
                 tp = target["m"]["pos"]
                 move_yaw = math.atan2(y - tp[1], x - tp[0])
-            move_mag = 1.0 if (target["d"] < 70 or target.get("far_hot")) else 0.42
+            move_mag = 1.0 if (target["d"] < 70 or target.get("far_hot") or target["hot"]) else 0.42
         elif target is not None and target["engage"]:
             mode = "fight"
             m = target["m"]
@@ -669,7 +676,7 @@ class Bot:
             # face it (front armor) but stay silent
             m = target["m"]
             shoot = (m["pos"], m["vel"], 4.5 * target["sz"], "mech", target["vis"])
-            hold_fire = not (AVOID_SHOOT and target.get("far_hot"))
+            hold_fire = not ((AVOID_SHOOT and target.get("far_hot")) or (hiding and target["hot"]))
         elif mode in ("loot", "hold", "zone", "drop"):
             shoot = self.pick_soft_target(obs, me, npcs, hpf, enemies)
 
@@ -870,6 +877,8 @@ class Bot:
         threat_near = any(e["d"] < 90 for e in enemies)
         # late in the match, walking around for loot is noise and exposure: only grab what's close
         loot_r = 1e9 if t < 200 and obs.get("alive", 16) > 6 else 45.0
+        if HIDE and t < HIDE_UNTIL_T and obs.get("alive", 16) > HIDE_UNTIL_ALIVE:
+            loot_r = 120.0 if t < 45 else 30.0
         for p in obs["pickups"]:
             v = self.wanted_pickup(p["kind"], me)
             if v <= 0 or t - self.take_fail.get(p["id"], -99) < 3:
@@ -936,7 +945,7 @@ class Bot:
         M = self.map
         eye = z + me["stats"].get("eye_height", 8.0)
         best = None
-        late = obs["t"] > 200 or obs.get("alive", 16) <= 6
+        late = obs["t"] > 200 or obs.get("alive", 16) <= 6 or (HIDE and 45 < obs["t"] < HIDE_UNTIL_T)
         for n in npcs:
             p = n["pos"]
             d = hyp(p[0] - x, p[1] - y)
@@ -1004,6 +1013,8 @@ class Bot:
         me = obs["self"]
         t = obs["t"]
         x, y, z = me["pos"]
+        if not enemies:
+            return None
         threats = [e for e in enemies if e["d"] < 220 and (e["vis"] or e["hot"])]
         if not threats:
             threats = [min(enemies, key=lambda e: e["d"])]
