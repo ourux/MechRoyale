@@ -154,16 +154,16 @@ class Map:
 
 # ---------------------------------------------------------------- helpers
 UPGRADE_PRIORITY = [
-    "armor", "nanites", "plating", "laser_damage", "gun_damage", "laser_charge",
-    "gun_rate", "lightning_efficiency", "gyros", "gun_velocity", "capacitor",
-    "reactor", "sensors", "servos", "gun_mag", "jets", "lightning_range",
+    "armor", "nanites", "plating", "laser_damage", "gun_damage", "gun_mag", "laser_charge",
+    "gun_rate", "lightning_efficiency", "servos", "gun_velocity", "gyros", "capacitor",
+    "reactor", "sensors", "jets", "lightning_range",
     "lightning_chain", "laser_pierce", "mortar_reload", "mortar_splash", "mortar_velocity",
 ]
 # practice duels reward killing faster; switched off once a free-for-all is detected
 UPGRADE_PRIORITY_PRACTICE = [
     "gun_damage", "gun_mag", "laser_damage", "gun_rate", "laser_charge", "armor", "lightning_efficiency",
-    "nanites", "plating", "gun_velocity", "gyros", "capacitor", "reactor", "sensors",
-    "servos", "jets", "lightning_range", "lightning_chain", "laser_pierce", "mortar_reload",
+    "nanites", "plating", "gun_velocity", "servos", "gyros", "capacitor", "reactor", "sensors",
+    "jets", "lightning_range", "lightning_chain", "laser_pierce", "mortar_reload",
     "mortar_splash", "mortar_velocity",
 ]
 OFFENSE_IN_PRACTICE = 1.0
@@ -226,10 +226,14 @@ RETREAT_DUMP = 1.0   # release a laser charge right away when retreating
 ISOLATE = 1.0        # with 2+ hunters in view, strafe to the side that breaks line of sight to the others and keeps it on the target
 ISO_STEP = 10.0
 COVER_FIGHT = 0.0    # anchor fights near cover corners, isolate 1v2+ angles, duck enemy lasers and dry reloads
+REL_DODGE = 1.0      # relative-velocity bullet dodge (catches leaded shots), cube-scaled hitbox, kinematic side, laser juke
+DROP_FIGHT = 1.0     # strafe inside nearby landed supply drops to cap full HP + 3 cubes mid-fight; rush drops when wounded
+ANISO_LASER = 1.0    # split horizontal/vertical cube-scaled laser release gate
+SMART_UPG = 1.0      # emergency plating pick when hpf < 0.55 for instant +210-290 HP mid-fight heal
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 61        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 63        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -255,6 +259,7 @@ class Bot:
         self.attackers = {}       # id -> last time it damaged us
         self.last_dmg_t = -99.0
         self.iso_t = -99.0
+        self.charge_t = {}        # enemy id -> time laser charge started
         self.fspot, self.fspot_t, self.fspot_tid = None, -99.0, None
         self.last_dmg_bearing = None
         self.dmg_window = []      # (t, amount)
@@ -321,8 +326,13 @@ class Bot:
             tr = self.tracks.get(m["id"])
             if tr is None:
                 tr = self.tracks[m["id"]] = {}
+            chg = m.get("charging", False)
+            if chg:
+                self.charge_t.setdefault(m["id"], t)
+            else:
+                self.charge_t.pop(m["id"], None)
             tr.update(pos=m["pos"], vel=m["vel"], t=t, hp=m.get("hp", 1400), max_hp=m.get("max_hp", 1400),
-                      weapons=m.get("weapons", []), cubes=m.get("cubes", 0), charging=m.get("charging", False),
+                      weapons=m.get("weapons", []), cubes=m.get("cubes", 0), charging=chg,
                       aim=m.get("aim", [0, 0]))
         for ev in obs["events"]:
             ty = ev.get("type")
@@ -442,12 +452,15 @@ class Bot:
         off = obs.get("offer")
         if off and off.get("choices"):
             ids = [c["id"] for c in off["choices"]]
-            best, bi = 999, 0
-            for i, cid in enumerate(ids):
+            if SMART_UPG and hpf < 0.55 and "plating" in ids:
+                bi = ids.index("plating")
+            else:
+                best, bi = 999, 0
                 pri = UPGRADE_PRIORITY_PRACTICE if (OFFENSE_IN_PRACTICE and not self.ffa) else UPGRADE_PRIORITY
-                r = pri.index(cid) if cid in pri else 500
-                if r < best:
-                    best, bi = r, i
+                for i, cid in enumerate(ids):
+                    r = pri.index(cid) if cid in pri else 500
+                    if r < best:
+                        best, bi = r, i
             act["pick"] = bi
 
         weapons = me["weapons"]
@@ -642,6 +655,9 @@ class Bot:
                 pref = max(PREF_RANGE_FFA if self.ffa else PREF_RANGE, 75.0)
             else:
                 pref = PREF_RANGE_FFA if self.ffa else PREF_RANGE
+            vis_others_ = [e for e in enemies if e is not target and e["vis"] and e["d"] < 180]
+            if vis_others_ and light is None:
+                pref = max(pref, 78.0)  # slight kite when 2+ hunters have LOS
             if not target["vis"]:
                 # close in to get a line, but stay careful
                 pref = min(pref, max(20.0, d - 30))
@@ -651,34 +667,53 @@ class Bot:
                     self.side = -self.side
                 self.side_until = t + random.uniform(STRAFE_MIN, STRAFE_MAX)
             if ISOLATE and M is not None and target["vis"]:
-                others_ = [e for e in enemies if e is not target and e["vis"] and e["d"] < 180]
+                # Include memory-tracked others so we don't flip right back into Hunter #2's LOS
+                others_ = [e for e in enemies if e is not target and e["d"] < 180 and (e["vis"] or e["d"] < 140)]
                 if others_ and t > self.iso_t:
                     self.iso_t = t + 0.3
                     sc_ = {}
                     for sg in (1, -1):
                         a_ = bear + sg * PI / 2
-                        qx, qy = x + math.cos(a_) * ISO_STEP, y + math.sin(a_) * ISO_STEP
-                        if M.blocked(qx, qy, z, ISO_STEP):
-                            sc_[sg] = -9.0
-                            continue
-                        qz = z + 8.0
-                        v_ = 0.0
-                        if M.los(qx, qy, qz, tp[0], tp[1], tp[2] + 4.5 * target["sz"]):
-                            v_ += 1.0
-                        for e_ in others_:
-                            op = e_["m"]["pos"]
-                            if not M.los(qx, qy, qz, op[0], op[1], op[2] + 4.5 * e_["sz"]):
-                                v_ += 1.5
-                            v_ += 0.01 * (hyp(qx - op[0], qy - op[1]) - e_["d"])
-                        if not self.in_safe(qx, qy, (fx, fy, fr)):
-                            v_ -= 3.0
-                        sc_[sg] = v_
-                    if abs(sc_[1] - sc_[-1]) >= 0.5:
+                        best_sg = -9.0
+                        for step_d in (ISO_STEP, ISO_STEP * 1.6):
+                            qx, qy = x + math.cos(a_) * step_d, y + math.sin(a_) * step_d
+                            if M.blocked(qx, qy, z, min(step_d, 9.0)):
+                                continue
+                            qz = M.surface(qx, qy, z + 2) + 8.0
+                            v_ = 0.0
+                            if M.los(qx, qy, qz, tp[0], tp[1], tp[2] + 4.5 * target["sz"], step=2.5):
+                                v_ += 1.2
+                            for e_ in others_[:3]:
+                                op = e_["m"]["pos"]
+                                w_o = 1.6 if e_["vis"] else 0.9
+                                if not M.los(qx, qy, qz, op[0], op[1], op[2] + 5.5 * e_["sz"], step=2.5):
+                                    v_ += w_o
+                                v_ += 0.012 * (hyp(qx - op[0], qy - op[1]) - e_["d"])
+                            if not self.in_safe(qx, qy, (fx, fy, fr)):
+                                v_ -= 3.0
+                            if v_ > best_sg:
+                                best_sg = v_
+                        sc_[sg] = best_sg
+                    if abs(sc_[1] - sc_[-1]) >= 0.4:
                         self.side = 1 if sc_[1] > sc_[-1] else -1
-                        self.side_until = t + 0.5
+                        self.side_until = t + 0.55
             tan = bear + self.side * PI / 2
             vx_ = radial * math.cos(bear) + STRAFE_W * math.cos(tan)
             vy_ = radial * math.sin(bear) + STRAFE_W * math.sin(tan)
+            # Mid-fight supply drop capture: strafe inside a nearby landed drop ring for instant full HP + 3 cubes!
+            if DROP_FIGHT:
+                for dr_ in obs.get("drops", []):
+                    if dr_.get("lands_in", 99) > 1.5 or dr_.get("holder") not in (None, me["id"]):
+                        continue
+                    dx_, dy_ = dr_["pos"][0] - x, dr_["pos"][1] - y
+                    dd_ = hyp(dx_, dy_)
+                    rad_ = dr_.get("radius", 8.0)
+                    if dd_ < 28.0 and (hpf < 0.85 or dd_ < 16.0):
+                        if dd_ > rad_ * 0.65:
+                            pull_ = 1.4 if dd_ > rad_ else 0.8
+                            vx_ += pull_ * dx_ / max(1.0, dd_)
+                            vy_ += pull_ * dy_ / max(1.0, dd_)
+                        break
             # don't strafe out of the zone
             if d_future > fr * 0.8:
                 zx, zy = fx - x, fy - y
@@ -749,7 +784,7 @@ class Bot:
         else:
             mode = "loot"
             goal = None
-            if DROP_RUSH:
+            if DROP_RUSH or (DROP_FIGHT and not self.ffa and hpf < 0.80):
                 drop = self.pick_drop(obs, me, (fx, fy, fr), enemies, hpf)
                 if drop is not None:
                     gx, gy = drop
@@ -862,45 +897,100 @@ class Bot:
                 break
 
         # ---- bullet / laser-charge dodge
-        if DODGE and mode not in ("unstuck", "duck"):
+        if DODGE and mode not in ("unstuck", "duck") and not (REL_DODGE and outside_now):
             st_ = me["stats"]
-            cz_ = z + st_.get("height", 9.0) * 0.56
-            reach_ = st_.get("radius", 3.0) + 1.1
+            my_sz = (1.0 + 0.05 * me.get("cubes", 0)) if REL_DODGE else 1.0
+            cz_ = z + st_.get("height", 9.0) * my_sz * 0.52
+            reach_ = (st_.get("radius", 2.5) * my_sz + 1.15) if REL_DODGE else (st_.get("radius", 3.0) + 1.1)
+            zhalf_ = st_.get("height", 9.0) * my_sz * 0.58
+            mvx, mvy, mvz = me["vel"][0], me["vel"][1], me["vel"][2] if len(me["vel"]) > 2 else 0.0
+            acc_ = st_.get("ground_accel", 58.5) if me["grounded"] else st_.get("air_accel", 12.0)
+            vmax_ = st_.get("boost_speed", 19.5) if (DODGE_BOOST and energy > DODGE_BOOST) else st_.get("walk_speed", 11.7)
             ddx = ddy = 0.0
             laser_ = False
+            urgent_tc = 9.0
             for pr in obs["projectiles"]:
                 if pr["kind"] == "mortar":
                     continue
                 pp, pv = pr["pos"], pr["vel"]
-                v2 = pv[0] * pv[0] + pv[1] * pv[1] + pv[2] * pv[2]
-                if v2 < 1:
-                    continue
-                tc = ((x - pp[0]) * pv[0] + (y - pp[1]) * pv[1] + (cz_ - pp[2]) * pv[2]) / v2
-                if tc <= 0 or tc > 0.7:
-                    continue
-                mxx, myy = pp[0] + pv[0] * tc - x, pp[1] + pv[1] * tc - y
-                if hyp(mxx, myy) < reach_ and abs(pp[2] + pv[2] * tc - cz_) < st_.get("height", 9.0) * 0.6:
-                    vh = hyp(pv[0], pv[1])
-                    if vh < 1:
+                if REL_DODGE:
+                    # True relative velocity: catches leaded shots aimed at our future position, ignores misses!
+                    rvx, rvy, rvz = pv[0] - mvx, pv[1] - mvy, pv[2] - mvz
+                    rv2 = rvx * rvx + rvy * rvy + rvz * rvz
+                    if rv2 < 1:
                         continue
-                    px_, py_ = -pv[1] / vh, pv[0] / vh
-                    if px_ * mxx + py_ * myy > 0:
-                        px_, py_ = -px_, -py_
-                    ddx += px_
-                    ddy += py_
+                    tc = ((x - pp[0]) * rvx + (y - pp[1]) * rvy + (cz_ - pp[2]) * rvz) / rv2
+                    if tc <= 0 or tc > 0.7:
+                        continue
+                    mxx = (pp[0] + pv[0] * tc) - (x + mvx * tc)
+                    myy = (pp[1] + pv[1] * tc) - (y + mvy * tc)
+                    mzz = (pp[2] + pv[2] * tc) - (cz_ + mvz * tc)
+                    if hyp(mxx, myy) < reach_ and abs(mzz) < zhalf_:
+                        vh = hyp(pv[0], pv[1])
+                        if vh < 1:
+                            continue
+                        px_, py_ = -pv[1] / vh, pv[0] / vh
+                        # Bullet offset from our *current* pos at tc along perp:
+                        bx_p = px_ * (pp[0] + pv[0] * tc - x) + py_ * (pp[1] + pv[1] * tc - y)
+                        v_p = mvx * px_ + mvy * py_
+                        d_pos = max(-vmax_ * tc, min(vmax_ * tc, v_p * tc + 0.5 * acc_ * tc * tc))
+                        d_neg = max(-vmax_ * tc, min(vmax_ * tc, v_p * tc - 0.5 * acc_ * tc * tc))
+                        if abs(d_neg - bx_p) > abs(d_pos - bx_p):
+                            px_, py_ = -px_, -py_
+                        w_ = 1.0 / max(0.15, tc)
+                        ddx += px_ * w_
+                        ddy += py_ * w_
+                        if tc < urgent_tc:
+                            urgent_tc = tc
+                else:
+                    v2 = pv[0] * pv[0] + pv[1] * pv[1] + pv[2] * pv[2]
+                    if v2 < 1:
+                        continue
+                    tc = ((x - pp[0]) * pv[0] + (y - pp[1]) * pv[1] + (cz_ - pp[2]) * pv[2]) / v2
+                    if tc <= 0 or tc > 0.7:
+                        continue
+                    mxx, myy = pp[0] + pv[0] * tc - x, pp[1] + pv[1] * tc - y
+                    if hyp(mxx, myy) < reach_ and abs(pp[2] + pv[2] * tc - cz_) < st_.get("height", 9.0) * 0.6:
+                        vh = hyp(pv[0], pv[1])
+                        if vh < 1:
+                            continue
+                        px_, py_ = -pv[1] / vh, pv[0] / vh
+                        if px_ * mxx + py_ * myy > 0:
+                            px_, py_ = -px_, -py_
+                        ddx += px_
+                        ddy += py_
             for m_ in obs["mechs"]:
                 if m_.get("kind") != "mech" or not m_.get("charging"):
                     continue
                 to_me = math.atan2(y - m_["pos"][1], x - m_["pos"][0])
-                if abs(wrap(m_["aim"][0] - to_me)) > 0.15:
+                if abs(wrap(m_["aim"][0] - to_me)) > 0.16:
                     continue
-                ddx += math.cos(to_me + PI / 2 * self.side) * 1.5
-                ddy += math.sin(to_me + PI / 2 * self.side) * 1.5
+                if REL_DODGE:
+                    # Snap-juke perpendicular against our current velocity during the 0.45-0.90 s laser release window!
+                    cage = t - self.charge_t.get(m_["id"], t)
+                    lpx, lpy = -math.sin(to_me), math.cos(to_me)
+                    if 0.45 <= cage <= 0.90:
+                        vp_ = mvx * lpx + mvy * lpy
+                        if vp_ > 1.5:
+                            lpx, lpy = -lpx, -lpy
+                        elif vp_ >= -1.5 and self.side < 0:
+                            lpx, lpy = -lpx, -lpy
+                        ddx += lpx * 4.0
+                        ddy += lpy * 4.0
+                        urgent_tc = min(urgent_tc, 0.2)
+                    else:
+                        ddx += lpx * self.side * 1.8
+                        ddy += lpy * self.side * 1.8
+                else:
+                    ddx += math.cos(to_me + PI / 2 * self.side) * 1.5
+                    ddy += math.sin(to_me + PI / 2 * self.side) * 1.5
                 laser_ = True
             l_ = hyp(ddx, ddy)
             if l_ > 0.01:
                 mv0, mv1 = act["move"]
-                mx_, my_ = mv0 * 0.4 + ddx / l_ * 0.9, mv1 * 0.4 + ddy / l_ * 0.9
+                mw_ = 0.15 if (REL_DODGE and urgent_tc < 0.35) else 0.4
+                dw_ = 1.0 if (REL_DODGE and urgent_tc < 0.35) else 0.9
+                mx_, my_ = mv0 * mw_ + ddx / l_ * dw_, mv1 * mw_ + ddy / l_ * dw_
                 l2 = hyp(mx_, my_)
                 if l2 > 1:
                     mx_, my_ = mx_ / l2, my_ / l2
@@ -951,11 +1041,20 @@ class Bot:
             # laser: hitscan, aim at the current point (plus decision lag)
             if laser is not None:
                 ly, lp, ld, LP = self.solve_aim(me, tp, tv, 0, th, gun=False)
+                high_l = False
                 if HIGH_AIM and kind == "mech" and M is not None and not M.los(x, y, mz, LP[0], LP[1], LP[2], step=2.0):
                     ly2, lp2, ld2, LP2 = self.solve_aim(me, tp, tv, 0, th * 1.7, gun=False)
                     if M.los(x, y, mz, LP2[0], LP2[1], LP2[2], step=2.0):
                         ly, lp, ld, LP = ly2, lp2, ld2, LP2
+                        high_l = True
                 lerr = self.aim_err(me, ly, lp) * ld
+                if ANISO_LASER and kind == "mech" and target is not None:
+                    ay_, ap_ = me["aim"]
+                    szt_ = target["sz"]
+                    l_aim_ok = (abs(wrap(ay_ - ly)) * math.cos(lp) * ld < 1.75 * szt_
+                                and abs(ap_ - lp) * ld < (1.2 if high_l else 3.2) * szt_)
+                else:
+                    l_aim_ok = lerr < 1.6
                 lrange = laser["stats"].get("range", 280)
                 lfull = laser["stats"].get("charge", 0.75)
                 charge = laser.get("charge", 0) or 0
@@ -974,7 +1073,7 @@ class Bot:
                         lethal = dmg * 0.8 >= target["m"]["hp"]
                     if RETREAT_DUMP and mode in ("retreat", "duck") and charge >= lst.get("min_charge", 0.15):
                         fire[laser_i] = False  # dump it: get full escape speed back
-                    elif (charge >= lfull * 0.97 or lethal) and l_los and lerr < 1.6:
+                    elif (charge >= lfull * 0.97 or lethal) and l_los and l_aim_ok:
                         fire[laser_i] = False  # release -> fire
                     elif charge > hold_max - 0.25 and l_los and lerr < 3.0:
                         fire[laser_i] = False
@@ -1037,7 +1136,10 @@ class Bot:
             aim = [look, 0.0]
             # keep the laser from auto-firing into nothing for too long: release when charged
             if laser is not None and (laser.get("charge", 0) or 0) > 0:
-                fire[laser_i] = True if (laser.get("charge", 0) or 0) < laser["stats"].get("charge", 0.75) + 1.5 else False
+                if RETREAT_DUMP and mode in ("retreat", "zone"):
+                    fire[laser_i] = False
+                else:
+                    fire[laser_i] = True if (laser.get("charge", 0) or 0) < laser["stats"].get("charge", 0.75) + 1.5 else False
 
         pmin, pmax = self.cfg["mech"].get("min_pitch", -0.7), self.cfg["mech"].get("max_pitch", 1.3)
         aim[1] = max(pmin, min(pmax, aim[1]))
