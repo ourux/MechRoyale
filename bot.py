@@ -195,21 +195,21 @@ DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before ot
 LOOT_SCAN = 0.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
-PICK_FIGHTS = 1.0    # practice (V's rule): attack a hunter only if it is alone and we are above PICK_HP; else heal out of sight
+PICK_FIGHTS = 0.0    # practice (V's rule): attack a hunter only if it is alone and we are above PICK_HP; else heal out of sight
 PICK_HP = 0.80
-HEAL_FIRST = 1.0     # practice: below HEAL_HP and not under fire, break line of sight and regen before the next hunter
+HEAL_FIRST = 0.0     # practice: below HEAL_HP and not under fire, break line of sight and regen before the next hunter
 HEAL_HP = 0.85
 FLEE_FFA = 1.0       # once a free-for-all is detected: run from anyone approaching, fight only when cornered (V's play)
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
-SEED_SALT = 4        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 5        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-pick"
+    name = "vmech-face"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
