@@ -225,10 +225,12 @@ TOPOFF = 1.0         # reload a partial mag when no enemy is known
 RETREAT_DUMP = 1.0   # release a laser charge right away when retreating
 DODGE_MOM = 1.0      # dodge side picked from current velocity (don't brake into the bullet); nearer bullets weigh more
 UPG_CTX = 1.0        # take plating first when below 55% HP
+FINISH_W = 80.0      # target-score bonus for a visible hunter under 35% HP (practice)
+STICK = 0.0          # target-score bonus for the target we were shooting < 2 s ago
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 44        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 45        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -253,6 +255,7 @@ class Bot:
         self.tracks = {}          # id -> dict(pos, vel, t, hp, max_hp, weapons, cubes)
         self.attackers = {}       # id -> last time it damaged us
         self.last_dmg_t = -99.0
+        self.stick_id, self.stick_t = None, -99.0
         self.last_dmg_bearing = None
         self.dmg_window = []      # (t, amount)
         self.side = 1
@@ -562,7 +565,9 @@ class Bot:
                 if e.get("engage"):
                     s -= 100
                 if FINISH_BONUS and not self.ffa and e["vis"] and m.get("hp", 1400) < 0.35 * m.get("max_hp", 1400):
-                    s -= 80
+                    s -= FINISH_W
+                if STICK and e["vis"] and m.get("id", e.get("id")) == self.stick_id and t - self.stick_t < 2.0:
+                    s -= STICK
                 if MATCHUP and e["vis"]:
                     mp = m["pos"]
                     to_me_ = math.atan2(y - mp[1], x - mp[0])
@@ -578,6 +583,8 @@ class Bot:
             my_kinds = [w_["kind"] for w_ in weapons if w_]
             my_laser, my_light = "laser" in my_kinds, "lightning" in my_kinds
             target = min(enemies, key=score)
+            if target is not None and target["vis"]:
+                self.stick_id, self.stick_t = target["m"].get("id", target.get("id")), t
 
         # ---- fight or flight
         my_eff = hp * (1 + 0.04 * min(me["cubes"], 10))
