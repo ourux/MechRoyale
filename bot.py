@@ -218,10 +218,12 @@ SNAP_FRAC = 0.8      # LASER_SNAP: snap aim to the hitscan point from this charg
 MATCHUP = 0.0       # target-score bonus per edge: back turned to us, laser vs mortar carrier, lightning vs laser carrier < 45 m
 STUCK_FIX = 1.0      # no stuck-jet from low net displacement while strafing in a fight (only when steering is blocked)
 HIGH_AIM = 1.0       # if the waist is behind cover, aim at the upper body when that has line of sight
+SOFT_WAIT = 1.0      # don't shoot NPCs/crates within 3 s of taking damage (turn to the shooter instead)
+NO_NPC_LASER = 1.0   # never charge the laser on NPC drones
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 38        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 39        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -838,7 +840,7 @@ class Bot:
             m = target["m"]
             shoot = (m["pos"], m["vel"], 4.5 * target["sz"], "mech", target["vis"])
             hold_fire = not ((AVOID_SHOOT and target.get("far_hot")) or (hiding and target["hot"]))
-        elif mode in ("loot", "hold", "zone", "drop"):
+        elif mode in ("loot", "hold", "zone", "drop") and not (SOFT_WAIT and t - self.last_dmg_t < 3.0):
             shoot = self.pick_soft_target(obs, me, npcs, hpf, enemies)
 
         if shoot is not None:
@@ -863,12 +865,16 @@ class Bot:
             # laser: hitscan, aim at the current point (plus decision lag)
             if laser is not None:
                 ly, lp, ld, LP = self.solve_aim(me, tp, tv, 0, th, gun=False)
+                if HIGH_AIM and kind == "mech" and M is not None and not M.los(x, y, mz, LP[0], LP[1], LP[2], step=2.0):
+                    ly2, lp2, ld2, LP2 = self.solve_aim(me, tp, tv, 0, th * 1.7, gun=False)
+                    if M.los(x, y, mz, LP2[0], LP2[1], LP2[2], step=2.0):
+                        ly, lp, ld, LP = ly2, lp2, ld2, LP2
                 lerr = self.aim_err(me, ly, lp) * ld
                 lrange = laser["stats"].get("range", 280)
                 lfull = laser["stats"].get("charge", 0.75)
                 charge = laser.get("charge", 0) or 0
                 l_los = M is None or M.los(x, y, mz, LP[0], LP[1], LP[2], step=2.0)
-                worth = kind == "mech" or kind == "npc"
+                worth = kind == "mech" or (kind == "npc" and not NO_NPC_LASER)
                 lethal = False
                 if charge > 0:
                     hold_max = lfull + self.cfg["weapons"]["laser"].get("hold_s", 2.0)
@@ -892,7 +898,7 @@ class Bot:
                     fire[laser_i] = True
                 if kind == "mech" and laser_i is not None and gun is None:
                     aim = [ly, lp]
-                elif LASER_SNAP and kind == "mech" and (charge >= lfull * SNAP_FRAC or lethal) and l_los:
+                elif LASER_SNAP and kind == "mech" and (charge >= lfull * SNAP_FRAC or lfull - charge <= 0.16 or lethal) and l_los:
                     aim = [ly, lp]
             if light is not None:
                 lst = light["stats"]
