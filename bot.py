@@ -214,10 +214,11 @@ HIDE_UNTIL_ALIVE = 3
 DODGE = 1.0          # dodge incoming bullets (closest approach < radius within 0.7 s) and laser charges aimed at us
 DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
 LIGHT_CONE = 0.4     # lightning fires when aim is within cone_deg * this of the target (cone_deg is the full width, so 0.5 = edge)
+SNAP_FRAC = 0.8      # LASER_SNAP: snap aim to the hitscan point from this charge fraction
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 33        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 34        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -869,7 +870,7 @@ class Bot:
                     fire[laser_i] = True
                 if kind == "mech" and laser_i is not None and gun is None:
                     aim = [ly, lp]
-                elif LASER_SNAP and kind == "mech" and (charge >= lfull * 0.8 or lethal) and l_los:
+                elif LASER_SNAP and kind == "mech" and (charge >= lfull * SNAP_FRAC or lethal) and l_los:
                     aim = [ly, lp]
             if light is not None:
                 lst = light["stats"]
