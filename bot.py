@@ -195,6 +195,8 @@ DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before ot
 LOOT_SCAN = 0.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
+LASER_SNAP = 0.0     # 1: once the laser is >=80% charged, aim at its hitscan point (not the gun lead) so it releases
+FINISH_BONUS = 0.0   # practice: extra target priority for a visible hunter under 35% HP
 OUTNUM_HP = 0.5      # retreat when outnumbered below this HP fraction
 RETREAT_LASER = 1.0  # 1: may charge the laser while retreating (halves speed)
 COVER_THREATS = 2    # how many nearby threats cover must hide from
@@ -539,6 +541,8 @@ class Bot:
                     s -= 50
                 if e.get("engage"):
                     s -= 100
+                if FINISH_BONUS and not self.ffa and e["vis"] and m.get("hp", 1400) < 0.35 * m.get("max_hp", 1400):
+                    s -= 80
                 return s
             target = min(enemies, key=score)
 
@@ -796,6 +800,8 @@ class Bot:
                 elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode == "retreat" and ld > 60 and RETREAT_LASER:
                     fire[laser_i] = True
                 if kind == "mech" and laser_i is not None and gun is None:
+                    aim = [ly, lp]
+                elif LASER_SNAP and kind == "mech" and charge >= lfull * 0.8 and l_los:
                     aim = [ly, lp]
             if light is not None:
                 lst = light["stats"]
