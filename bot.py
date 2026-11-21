@@ -195,19 +195,21 @@ DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before ot
 LOOT_SCAN = 0.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
+PICK_FIGHTS = 1.0    # practice (V's rule): attack a hunter only if it is alone and we are above PICK_HP; else heal out of sight
+PICK_HP = 0.80
 HEAL_FIRST = 1.0     # practice: below HEAL_HP and not under fire, break line of sight and regen before the next hunter
 HEAL_HP = 0.85
 FLEE_FFA = 1.0       # once a free-for-all is detected: run from anyone approaching, fight only when cornered (V's play)
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
-SEED_SALT = 3        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 4        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-heal"
+    name = "vmech-pick"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -492,6 +494,17 @@ class Bot:
                 threat = True
             if HEAL_FIRST and not self.ffa and hpf < HEAL_HP and t - self.last_dmg_t > 1.0 and d > 35:
                 threat = False   # heal up out of sight first; fight it when it comes close
+            if PICK_FIGHTS and not self.ffa:
+                p0 = m["pos"]
+                others = 0
+                for tid, tr in self.tracks.items():
+                    if tid == m["id"] or t - tr["t"] > 10:
+                        continue
+                    if hyp(tr["pos"][0] - x, tr["pos"][1] - y) < 200 or hyp(tr["pos"][0] - p0[0], tr["pos"][1] - p0[1]) < 120:
+                        others += 1
+                alone = others == 0
+                threat = (e["vis"] and d < AIMED_RANGE and alone and hpf > PICK_HP) \
+                    or (e["hot"] and d < 60) or (e["vis"] and d < 30)
             e["engage"] = bool(threat or weak)
 
         # ---- target choice
@@ -548,7 +561,7 @@ class Bot:
                 ax_, ay_ = math.cos(away) + 0.5 * zx / max(1, hyp(zx, zy)), math.sin(away) + 0.5 * zy / max(1, hyp(zx, zy))
                 move_yaw = math.atan2(ay_, ax_) + self.side * 0.5
             boost = energy > 20
-        elif target is not None and not target["engage"] and (target["vis"] or target.get("far_hot") or (hiding and target["hot"])) and (target["d"] < (220.0 if (hiding or (HEAL_FIRST and not self.ffa and hpf < HEAL_HP)) else AVOID_RANGE) or target.get("far_hot") or (hiding and target["hot"])):
+        elif target is not None and not target["engage"] and (target["vis"] or target.get("far_hot") or (hiding and target["hot"])) and (target["d"] < (220.0 if (hiding or (not self.ffa and (PICK_FIGHTS or (HEAL_FIRST and hpf < HEAL_HP)))) else AVOID_RANGE) or target.get("far_hot") or (hiding and target["hot"])):
             # someone else's fight or a bot not looking at us: get out of its sight, quietly
             mode = "avoid"
             cov = self.find_cover(obs, [e for e in enemies if e["vis"]] or [target], (fx, fy, fr), t_start)
@@ -557,7 +570,7 @@ class Bot:
             else:
                 tp = target["m"]["pos"]
                 move_yaw = math.atan2(y - tp[1], x - tp[0])
-            move_mag = 1.0 if (target["d"] < 70 or target.get("far_hot") or target["hot"] or (HEAL_FIRST and not self.ffa and hpf < HEAL_HP)) else 0.42
+            move_mag = 1.0 if (target["d"] < 70 or target.get("far_hot") or target["hot"] or (not self.ffa and (PICK_FIGHTS or (HEAL_FIRST and hpf < HEAL_HP)))) else 0.42
         elif target is not None and target["engage"]:
             mode = "fight"
             m = target["m"]
