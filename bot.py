@@ -182,7 +182,7 @@ AIM_TOL = 3.0
 FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
 RELOAD_COVER = 0.0  # 1: break line of sight while the gun reloads (and the laser is not ready)
-MRM = 0.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
+MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
@@ -193,7 +193,7 @@ NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-r140"
+    name = "vmech-mrm"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
