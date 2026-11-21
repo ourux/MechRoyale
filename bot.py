@@ -167,7 +167,7 @@ UPGRADE_PRIORITY_PRACTICE = [
     "mortar_splash", "mortar_velocity",
 ]
 OFFENSE_IN_PRACTICE = 1.0
-LIGHTNING_PRACTICE = 1.0  # practice: lightning > laser, look for it, wider fire cone
+LIGHTNING_PRACTICE = 0.0  # practice: lightning > laser, look for it, wider fire cone
 WEAPON_VALUE = {"laser": 3, "lightning": 2, "mortar": 0, "gun": 0}
 
 # tunables (tested in the local simulator)
@@ -195,16 +195,17 @@ DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before ot
 LOOT_SCAN = 0.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
+FLEE_FFA = 1.0       # once a free-for-all is detected: run from anyone approaching, fight only when cornered (V's play)
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
-SEED_SALT = 1        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 2        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-zap"
+    name = "vmech-flee"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -458,7 +459,7 @@ class Bot:
             hot = (t - self.attackers.get(m["id"], -99)) < 4.0
             enemies.append({"m": m, "d": d, "vis": vis, "hot": hot, "sz": sz})
         n_close = sum(1 for e in enemies if e["d"] < 160)
-        hiding = bool(HIDE) and t < HIDE_UNTIL_T and obs.get("alive", 16) > HIDE_UNTIL_ALIVE
+        hiding = (bool(HIDE) or (bool(FLEE_FFA) and self.ffa)) and t < HIDE_UNTIL_T and obs.get("alive", 16) > HIDE_UNTIL_ALIVE
         alive = obs.get("alive", 16)
         late = alive <= 5
 
