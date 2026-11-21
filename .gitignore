@@ -1,5 +1,3 @@
 __pycache__/
 *.pyc
-sim/bot_*.py
-!sim/bot_v1.py
-!sim/bot_starter.py
+sim/
