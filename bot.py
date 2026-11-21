@@ -174,7 +174,7 @@ AVOID_SHOOT = 0.0
 PREF_RANGE = 140.0
 PREF_RANGE_FFA = 140.0  # range once a death we didn't cause shows this is a free-for-all
 PRACTICE_ENGAGE = 0.0   # 1: until FFA is detected, fight every visible mech within AIMED_RANGE (all are hunters)
-WEAPON_HUNT = 0.0       # 1: with no second weapon, value weapon pickups much higher and look farther
+WEAPON_HUNT = 1.0       # 1: with no second weapon, value weapon pickups much higher and look farther
 STRAFE_MIN = 0.45
 STRAFE_MAX = 1.25
 FLIP_P = 0.6
@@ -182,6 +182,7 @@ AIM_TOL = 3.0
 FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
 RELOAD_COVER = 0.0  # 1: break line of sight while the gun reloads (and the laser is not ready)
+LOOT_SCAN = 1.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
@@ -193,7 +194,7 @@ NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-mrm"
+    name = "vmech-laser1st"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -765,6 +766,11 @@ class Bot:
                     tr = min(self.tracks.values(), key=lambda v: t - v["t"])
                     if t - tr["t"] < 8:
                         look = math.atan2(tr["pos"][1] - y, tr["pos"][0] - x)
+            if look is None and LOOT_SCAN and me["weapons"][1] is None and t < 25 and mode != "retreat":
+                if self.scan_yaw is None:
+                    self.scan_yaw = me["aim"][0]
+                self.scan_yaw = wrap(self.scan_yaw + 0.45)
+                look = self.scan_yaw
             if look is None:
                 if act["move"] != [0.0, 0.0] and mode != "retreat":
                     look = math.atan2(act["move"][1], act["move"][0])
