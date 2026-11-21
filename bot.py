@@ -211,7 +211,9 @@ FLEE_FFA = 0.0       # once a free-for-all is detected: run from anyone approach
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
-SEED_SALT = 26        # varies the bot's own random choices (strafe timing etc.); same play strength
+DODGE = 1.0          # dodge incoming bullets (closest approach < radius within 0.7 s) and laser charges aimed at us
+DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
+SEED_SALT = 27        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -749,6 +751,53 @@ class Bot:
                 act["move"] = [math.cos(a2), math.sin(a2)]
                 act["boost"] = energy > 10
                 break
+
+        # ---- bullet / laser-charge dodge
+        if DODGE and mode != "unstuck":
+            st_ = me["stats"]
+            cz_ = z + st_.get("height", 9.0) * 0.56
+            reach_ = st_.get("radius", 3.0) + 1.1
+            ddx = ddy = 0.0
+            laser_ = False
+            for pr in obs["projectiles"]:
+                if pr["kind"] == "mortar":
+                    continue
+                pp, pv = pr["pos"], pr["vel"]
+                v2 = pv[0] * pv[0] + pv[1] * pv[1] + pv[2] * pv[2]
+                if v2 < 1:
+                    continue
+                tc = ((x - pp[0]) * pv[0] + (y - pp[1]) * pv[1] + (cz_ - pp[2]) * pv[2]) / v2
+                if tc <= 0 or tc > 0.7:
+                    continue
+                mxx, myy = pp[0] + pv[0] * tc - x, pp[1] + pv[1] * tc - y
+                if hyp(mxx, myy) < reach_:
+                    vh = hyp(pv[0], pv[1])
+                    if vh < 1:
+                        continue
+                    px_, py_ = -pv[1] / vh, pv[0] / vh
+                    if px_ * mxx + py_ * myy > 0:
+                        px_, py_ = -px_, -py_
+                    ddx += px_
+                    ddy += py_
+            for m_ in obs["mechs"]:
+                if m_.get("kind") != "mech" or not m_.get("charging"):
+                    continue
+                to_me = math.atan2(y - m_["pos"][1], x - m_["pos"][0])
+                if abs(wrap(m_["aim"][0] - to_me)) > 0.15:
+                    continue
+                ddx += math.cos(to_me + PI / 2 * self.side) * 1.5
+                ddy += math.sin(to_me + PI / 2 * self.side) * 1.5
+                laser_ = True
+            l_ = hyp(ddx, ddy)
+            if l_ > 0.01:
+                mv0, mv1 = act["move"]
+                mx_, my_ = mv0 * 0.4 + ddx / l_ * 0.9, mv1 * 0.4 + ddy / l_ * 0.9
+                l2 = hyp(mx_, my_)
+                if l2 > 1:
+                    mx_, my_ = mx_ / l2, my_ / l2
+                act["move"] = [round(mx_, 3), round(my_, 3)]
+                if (laser_ and energy > 25) or (DODGE_BOOST and energy > DODGE_BOOST):
+                    act["boost"] = True
 
         # ---- aim & fire
         fire = [False, False]
