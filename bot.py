@@ -182,6 +182,8 @@ AIM_TOL = 3.0
 FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
 RELOAD_COVER = 0.0  # 1: break line of sight while the gun reloads (and the laser is not ready)
+MRM = 0.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
+MRM_PERIOD = 1.0
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
@@ -230,6 +232,8 @@ class Bot:
         self.take_fail = {}       # pickup id -> time
         self.crate_hits = {}
         self.slow = 0
+        self.mrm_dest = None
+        self.mrm_t = -99.0
         self.my_kills = 0
         self.ffa = False          # practice squads never kill each other; a death we didn't cause => FFA
         self.nook = None          # chosen (x, y)
@@ -616,7 +620,19 @@ class Bot:
                 hx, hy = fx + dx / dl * ring, fy + dy / dl * ring
             else:
                 hx, hy = fx, fy
-            if NOOK and M is not None:
+            if MRM and M is not None:
+                ax_, ay_ = (hx, hy) if dl > ring * 0.8 else (x, y)
+                dest = self.mrm(obs, me, (fx, fy, fr), ax_, ay_, t)
+                if dest is not None:
+                    hx, hy, mag = dest
+                    if hyp(hx - x, hy - y) > 2.0:
+                        move_yaw = math.atan2(hy - y, hx - x)
+                        move_mag = mag
+                    else:
+                        move_yaw, move_mag = 0.0, 0.0
+                else:
+                    move_yaw, move_mag = 0.0, 0.0
+            elif NOOK and M is not None:
                 ax_, ay_ = (hx, hy) if dl > ring * 0.8 else (x, y)
                 nk = self.update_nook(obs, me, (fx, fy, fr), ax_, ay_, t_start)
                 if nk is not None:
@@ -804,6 +820,50 @@ class Bot:
         if tt < 0 or tt > 6:
             return None
         return px + vx * tt, py + vy * tt
+
+    def mrm(self, obs, me, safe, ax, ay, t):
+        """Minimum Risk Movement: every MRM_PERIOD s, score 12 nearby points and head for the safest."""
+        M = self.map
+        x, y, z = me["pos"]
+        fx, fy, fr = safe
+        threats = []
+        for tid, tr in self.tracks.items():
+            if t - tr["t"] > 15:
+                continue
+            p = tr["pos"]
+            d = hyp(p[0] - x, p[1] - y)
+            if d < 260:
+                threats.append((d, p, tr.get("hp", 1400)))
+        threats.sort(key=lambda q: q[0])
+        threats = threats[:4]
+        mag = 1.0 if (threats and threats[0][0] < 200) else 0.38
+        if self.mrm_dest is not None and t - self.mrm_t < MRM_PERIOD and hyp(self.mrm_dest[0] - x, self.mrm_dest[1] - y) > 3:
+            return (self.mrm_dest[0], self.mrm_dest[1], mag)
+        best, bs = None, 1e18
+        for k in range(12):
+            a = k * TAU / 12 + random.uniform(-0.2, 0.2)
+            r = random.uniform(12.0, 28.0)
+            px, py = x + math.cos(a) * r, y + math.sin(a) * r
+            if M.blocked(px, py, z, r):
+                continue
+            if hyp(px - fx, py - fy) > fr * 0.9:
+                continue
+            pz = M.surface(px, py, z + 2)
+            risk = 0.03 * hyp(px - ax, py - ay)
+            for (d0, p, ehp) in threats:
+                dd = max(10.0, hyp(px - p[0], py - p[1]))
+                w = (ehp / 1400.0) * 4000.0 / (dd * dd)
+                if M.los(p[0], p[1], p[2] + 8.0, px, py, pz + 4.5, 2.5):
+                    w *= 3.0
+                risk += w
+            risk += random.uniform(0, 0.05)
+            if risk < bs:
+                best, bs = (px, py), risk
+        if best is None:
+            return None
+        self.mrm_dest = best
+        self.mrm_t = t
+        return (best[0], best[1], mag)
 
     def exposure(self, px, py):
         """How many of 16 ring positions (70 m and 130 m out) can see a mech standing here."""
