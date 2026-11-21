@@ -167,6 +167,7 @@ UPGRADE_PRIORITY_PRACTICE = [
     "mortar_splash", "mortar_velocity",
 ]
 OFFENSE_IN_PRACTICE = 1.0
+LIGHTNING_PRACTICE = 1.0  # practice: lightning > laser, look for it, wider fire cone
 WEAPON_VALUE = {"laser": 3, "lightning": 2, "mortar": 0, "gun": 0}
 
 # tunables (tested in the local simulator)
@@ -203,7 +204,7 @@ NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-offense"
+    name = "vmech-zap"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -753,7 +754,7 @@ class Bot:
             if light is not None:
                 lst = light["stats"]
                 rng = lst.get("range", 45) * 0.95
-                cone = math.radians(lst.get("cone_deg", 30)) * 0.4
+                cone = math.radians(lst.get("cone_deg", 30)) * (0.82 if (LIGHTNING_PRACTICE and not self.ffa) else 0.4)
                 ayaw = me["aim"][0]
                 byaw = math.atan2(tp[1] - y, tp[0] - x)
                 hd = hyp(tp[0] - x, tp[1] - y)
@@ -937,18 +938,23 @@ class Bot:
         fx, fy, fr = safe
         return hyp(px - fx, py - fy) < fr
 
+    def wval(self, kind):
+        if LIGHTNING_PRACTICE and not self.ffa:
+            return {"lightning": 3, "laser": 2}.get(kind, WEAPON_VALUE.get(kind, 0))
+        return WEAPON_VALUE.get(kind, 0)
+
     def wanted_pickup(self, kind, me):
         ws = me["weapons"]
         have = [w["kind"] for w in ws if w]
         if kind in have:
             return 0
-        v = WEAPON_VALUE.get(kind, 0)
+        v = self.wval(kind)
         if v <= 0:
             return 0
         if ws[1] is None or ws[0] is None:
             return v
         # both full: swap the weaker non-gun weapon if this one is better
-        others = [WEAPON_VALUE.get(w["kind"], 0) for w in ws if w and w["kind"] != "gun"]
+        others = [self.wval(w["kind"]) for w in ws if w and w["kind"] != "gun"]
         if others and v > min(others):
             return v - min(others)
         return 0
@@ -973,7 +979,7 @@ class Bot:
             if d > loot_r:
                 continue
             s = (60.0 * v) / (d + 15)
-            if WEAPON_HUNT and me["weapons"][1] is None:
+            if (WEAPON_HUNT or (LIGHTNING_PRACTICE and not self.ffa)) and (me["weapons"][1] is None or (p["kind"] == "lightning" and not any(w and w["kind"] == "lightning" for w in me["weapons"]))):
                 s *= 4.0
             if s > bs:
                 best, bs = (px, py), s
@@ -1078,7 +1084,7 @@ class Bot:
             worst_i, worst_v = None, 99
             for i, w in enumerate(ws):
                 if w and w["kind"] != "gun":
-                    v = WEAPON_VALUE.get(w["kind"], 0)
+                    v = self.wval(w["kind"])
                     if w["kind"] == "laser" and (w.get("charge", 0) or 0) > 0:
                         continue
                     if v < worst_v:
