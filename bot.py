@@ -159,6 +159,14 @@ UPGRADE_PRIORITY = [
     "reactor", "sensors", "servos", "gun_mag", "jets", "lightning_range",
     "lightning_chain", "laser_pierce", "mortar_reload", "mortar_splash", "mortar_velocity",
 ]
+# practice duels reward killing faster; switched off once a free-for-all is detected
+UPGRADE_PRIORITY_PRACTICE = [
+    "gun_damage", "laser_damage", "gun_rate", "laser_charge", "armor", "lightning_efficiency",
+    "nanites", "plating", "gun_velocity", "gyros", "capacitor", "reactor", "gun_mag", "sensors",
+    "servos", "jets", "lightning_range", "lightning_chain", "laser_pierce", "mortar_reload",
+    "mortar_splash", "mortar_velocity",
+]
+OFFENSE_IN_PRACTICE = 1.0
 WEAPON_VALUE = {"laser": 3, "lightning": 2, "mortar": 0, "gun": 0}
 
 # tunables (tested in the local simulator)
@@ -195,7 +203,7 @@ NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-mrm140"
+    name = "vmech-offense"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -400,7 +408,8 @@ class Bot:
             ids = [c["id"] for c in off["choices"]]
             best, bi = 999, 0
             for i, cid in enumerate(ids):
-                r = UPGRADE_PRIORITY.index(cid) if cid in UPGRADE_PRIORITY else 500
+                pri = UPGRADE_PRIORITY_PRACTICE if (OFFENSE_IN_PRACTICE and not self.ffa) else UPGRADE_PRIORITY
+                r = pri.index(cid) if cid in pri else 500
                 if r < best:
                     best, bi = r, i
             act["pick"] = bi
