@@ -161,8 +161,8 @@ UPGRADE_PRIORITY = [
 ]
 # practice duels reward killing faster; switched off once a free-for-all is detected
 UPGRADE_PRIORITY_PRACTICE = [
-    "gun_damage", "laser_damage", "gun_rate", "laser_charge", "armor", "lightning_efficiency",
-    "nanites", "plating", "gun_velocity", "gyros", "capacitor", "reactor", "gun_mag", "sensors",
+    "gun_damage", "gun_mag", "laser_damage", "gun_rate", "laser_charge", "armor", "lightning_efficiency",
+    "nanites", "plating", "gun_velocity", "gyros", "capacitor", "reactor", "sensors",
     "servos", "jets", "lightning_range", "lightning_chain", "laser_pierce", "mortar_reload",
     "mortar_splash", "mortar_velocity",
 ]
@@ -216,10 +216,12 @@ DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
 LIGHT_CONE = 0.4     # lightning fires when aim is within cone_deg * this of the target (cone_deg is the full width, so 0.5 = edge)
 SNAP_FRAC = 0.8      # LASER_SNAP: snap aim to the hitscan point from this charge fraction
 MATCHUP = 0.0       # target-score bonus per edge: back turned to us, laser vs mortar carrier, lightning vs laser carrier < 45 m
+STUCK_FIX = 1.0      # no stuck-jet from low net displacement while strafing in a fight (only when steering is blocked)
+HIGH_AIM = 1.0       # if the waist is behind cover, aim at the upper body when that has line of sight
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 37        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 38        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -746,7 +748,7 @@ class Bot:
             moved = 99.0
             if len(self.hist) > 5 and t - self.hist[0][0] > 0.9:
                 moved = hyp(x - self.hist[0][1], y - self.hist[0][2])
-            if (not ok or moved < 1.2 * move_mag) and t > self.jet_until and energy > 55:
+            if (not ok or (moved < 1.2 * move_mag and not (STUCK_FIX and mode == "fight"))) and t > self.jet_until and energy > 55:
                 self.jet_until = t + 2.2
             if t < self.jet_until:
                 if me["grounded"]:
@@ -846,6 +848,12 @@ class Bot:
             aim = [yaw, pitch]
             mz = z + stats.get("muzzle_height", 7.0)
             los_ok = vis if M is None else M.los(x, y, mz, P[0], P[1], P[2], step=2.0)
+            if HIGH_AIM and not los_ok and kind == "mech" and M is not None:
+                y2, p2, d2, P2 = self.solve_aim(me, tp, tv, gspd, th * 1.7, gun=True)
+                if M.los(x, y, mz, P2[0], P2[1], P2[2], step=2.0):
+                    yaw, pitch, dist, P = y2, p2, d2, P2
+                    aim = [yaw, pitch]
+                    los_ok = True
             err = self.aim_err(me, yaw, pitch)
             miss = err * dist
             tol = AIM_TOL if kind == "mech" else 1.4
