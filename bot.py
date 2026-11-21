@@ -195,21 +195,23 @@ DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before ot
 LOOT_SCAN = 0.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
+HUNT_LONE = 1.0      # V: hunt mechs that are alone, keep moving until one is found; never turn away from a shooter
+HUNT_HP = 0.60
 PICK_FIGHTS = 0.0    # practice (V's rule): attack a hunter only if it is alone and we are above PICK_HP; else heal out of sight
 PICK_HP = 0.80
 HEAL_FIRST = 0.0     # practice: below HEAL_HP and not under fire, break line of sight and regen before the next hunter
 HEAL_HP = 0.85
-FLEE_FFA = 1.0       # once a free-for-all is detected: run from anyone approaching, fight only when cornered (V's play)
+FLEE_FFA = 0.0       # once a free-for-all is detected: run from anyone approaching, fight only when cornered (V's play)
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
-SEED_SALT = 5        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 6        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-face"
+    name = "stormrush"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
@@ -248,6 +250,8 @@ class Bot:
         self.take_fail = {}       # pickup id -> time
         self.crate_hits = {}
         self.slow = 0
+        self.roam = None
+        self.roam_t = -99.0
         self.mrm_dest = None
         self.mrm_t = -99.0
         self.my_kills = 0
@@ -505,6 +509,19 @@ class Bot:
                 alone = others == 0
                 threat = (e["vis"] and d < AIMED_RANGE and alone and hpf > PICK_HP) \
                     or (e["hot"] and d < 60) or (e["vis"] and d < 30)
+            if HUNT_LONE:
+                p0 = m["pos"]
+                others = 0
+                for tid, tr in self.tracks.items():
+                    if tid == m["id"] or t - tr["t"] > 10:
+                        continue
+                    if hyp(tr["pos"][0] - p0[0], tr["pos"][1] - p0[1]) < 120 or hyp(tr["pos"][0] - x, tr["pos"][1] - y) < 120:
+                        others += 1
+                e["lone"] = others == 0
+                threat = (e["vis"] and d < AIMED_RANGE and e["lone"] and hpf > HUNT_HP) \
+                    or (e["hot"] and d < 140) or (e["vis"] and d < 45) \
+                    or (e["vis"] and d < 110 and aimed_at_me(m))
+                weak = False
             e["engage"] = bool(threat or weak)
 
         # ---- target choice
@@ -657,7 +674,15 @@ class Bot:
                 hx, hy = fx + dx / dl * ring, fy + dy / dl * ring
             else:
                 hx, hy = fx, fy
-            if MRM and M is not None:
+            if HUNT_LONE and M is not None:
+                goal = self.hunt_goal(obs, me, (fx, fy, fr), t)
+                mode = "hunt"
+                if goal is not None and hyp(goal[0] - x, goal[1] - y) > 4:
+                    move_yaw = math.atan2(goal[1] - y, goal[0] - x)
+                    move_mag = 1.0
+                else:
+                    move_yaw, move_mag = 0.0, 0.0
+            elif MRM and M is not None:
                 ax_, ay_ = (hx, hy) if dl > ring * 0.8 else (x, y)
                 dest = self.mrm(obs, me, (fx, fy, fr), ax_, ay_, t)
                 if dest is not None:
@@ -862,6 +887,46 @@ class Bot:
         if tt < 0 or tt > 6:
             return None
         return px + vx * tt, py + vy * tt
+
+    def hunt_goal(self, obs, me, safe, t):
+        """Where to go while looking for a lone mech: last seen lone enemy, then a heard shot, then roam the safe circle."""
+        x, y, z = me["pos"]
+        fx, fy, fr = safe
+        best = None
+        for tid, tr in self.tracks.items():
+            age = t - tr["t"]
+            if age > 20:
+                continue
+            p = tr["pos"]
+            if hyp(p[0] - fx, p[1] - fy) > fr * 1.05:
+                continue
+            near = sum(1 for oid, o in self.tracks.items() if oid != tid and t - o["t"] < 10
+                       and hyp(o["pos"][0] - p[0], o["pos"][1] - p[1]) < 120)
+            if near:
+                continue
+            d = hyp(p[0] - x, p[1] - y)
+            sc = d + age * 8
+            if best is None or sc < best[0]:
+                best = (sc, p[0], p[1])
+        if best is not None:
+            return (best[1], best[2])
+        for s_ in obs["sounds"]:
+            if s_["kind"] in ("gun", "laser", "lightning", "step", "boost") and s_["dist"] in ("near", "mid"):
+                r = 50.0 if s_["dist"] == "near" else 110.0
+                gx, gy = x + math.cos(s_["bearing"]) * r, y + math.sin(s_["bearing"]) * r
+                if hyp(gx - fx, gy - fy) < fr:
+                    self.roam, self.roam_t = (gx, gy), t
+                    return self.roam
+        if self.roam is None or t - self.roam_t > 15 or hyp(self.roam[0] - x, self.roam[1] - y) < 8 \
+                or hyp(self.roam[0] - fx, self.roam[1] - fy) > fr:
+            for _ in range(20):
+                a = random.uniform(0, TAU)
+                r = fr * math.sqrt(random.random()) * 0.8
+                gx, gy = fx + math.cos(a) * r, fy + math.sin(a) * r
+                if self.map is None or not self.map.blocked(gx, gy, self.map.gz(gx, gy), 1.0):
+                    break
+            self.roam, self.roam_t = (gx, gy), t
+        return self.roam
 
     def mrm(self, obs, me, safe, ax, ay, t):
         """Minimum Risk Movement: every MRM_PERIOD s, score 12 nearby points and head for the safest."""
