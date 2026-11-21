@@ -172,6 +172,9 @@ AVOID_RANGE = 150.0
 FAR_HOT = 1e9        # a mech hitting us from beyond this range is avoided, not fought, unless we are clearly ahead
 AVOID_SHOOT = 0.0
 PREF_RANGE = 110.0
+PREF_RANGE_FFA = 110.0  # range once a death we didn't cause shows this is a free-for-all
+PRACTICE_ENGAGE = 0.0   # 1: until FFA is detected, fight every visible mech within AIMED_RANGE (all are hunters)
+WEAPON_HUNT = 0.0       # 1: with no second weapon, value weapon pickups much higher and look farther
 STRAFE_MIN = 0.45
 STRAFE_MAX = 1.25
 FLIP_P = 0.6
@@ -223,6 +226,8 @@ class Bot:
         self.take_fail = {}       # pickup id -> time
         self.crate_hits = {}
         self.slow = 0
+        self.my_kills = 0
+        self.ffa = False          # practice squads never kill each other; a death we didn't cause => FFA
         self.nook = None          # chosen (x, y)
         self.nook_t = -99.0
         self.nook_cands = []      # pending [(x, y)]
@@ -275,6 +280,7 @@ class Bot:
                 if ev.get("by") is not None:
                     self.attackers[ev["by"]] = t
             elif ty == "kill":
+                self.my_kills += 1
                 self.dead_ids.add(ev.get("target"))
                 self.tracks.pop(ev.get("target"), None)
             elif ty == "take_failed":
@@ -370,6 +376,8 @@ class Bot:
         x, y, z = me["pos"]
         act = {"tick": obs["tick"]}
         self.update_tracks(obs)
+        if not self.ffa and self.cfg["match"].get("mechs", 16) - obs.get("alive", 16) > self.my_kills:
+            self.ffa = True
         stats = me["stats"]
         maxhp = me["max_hp"]
         hp = me["hp"]
@@ -453,6 +461,8 @@ class Bot:
                 p = m["pos"]
                 others = sum(1 for o in enemies if o is not e and hyp(o["m"]["pos"][0] - p[0], o["m"]["pos"][1] - p[1]) < 90)
                 weak = others == 0 and not late
+            if PRACTICE_ENGAGE and not self.ffa and e["vis"] and d < AIMED_RANGE:
+                threat = True
             e["engage"] = bool(threat or weak)
 
         # ---- target choice
@@ -529,9 +539,9 @@ class Bot:
             if light is not None and "lightning" not in their and hpf > 0.45:
                 pref = 28.0
             elif "lightning" in their:
-                pref = max(PREF_RANGE, 75.0)
+                pref = max(PREF_RANGE_FFA if self.ffa else PREF_RANGE, 75.0)
             else:
-                pref = PREF_RANGE
+                pref = PREF_RANGE_FFA if self.ffa else PREF_RANGE
             if not target["vis"]:
                 # close in to get a line, but stay careful
                 pref = min(pref, max(20.0, d - 30))
@@ -870,6 +880,8 @@ class Bot:
             if d > loot_r:
                 continue
             s = (60.0 * v) / (d + 15)
+            if WEAPON_HUNT and me["weapons"][1] is None:
+                s *= 4.0
             if s > bs:
                 best, bs = (px, py), s
         for c in obs["cubes"]:
