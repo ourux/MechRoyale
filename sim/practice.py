@@ -186,6 +186,7 @@ class PracticeMatch(sim.Match):
             for th in self.things:
                 if th.alive and th.kind == "npc":
                     self.npc_step(th)
+            self.drops_step()
             self.step_bullets()
             for m in self.mechs:
                 if m.alive:

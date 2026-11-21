@@ -182,6 +182,7 @@ AIM_TOL = 3.0
 FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
 RELOAD_COVER = 0.0  # 1: break line of sight while the gun reloads (and the laser is not ready)
+DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before other loot, from farther away
 LOOT_SCAN = 1.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
@@ -583,8 +584,15 @@ class Bot:
                     boost = energy > 20
         else:
             mode = "loot"
-            goal = self.pick_loot(obs, me, (fx, fy, fr), enemies, hpf)
-            if goal is not None:
+            goal = None
+            if DROP_RUSH:
+                drop = self.pick_drop(obs, me, (fx, fy, fr), enemies, hpf)
+                if drop is not None:
+                    gx, gy = drop
+                    mode = "drop"
+            if mode == "drop":
+                pass
+            elif (goal := self.pick_loot(obs, me, (fx, fy, fr), enemies, hpf)) is not None:
                 gx, gy = goal
             elif zone_push or d_future > fr * 0.7:
                 gx, gy = fx, fy
@@ -993,11 +1001,11 @@ class Bot:
             px, py = dr["pos"][0], dr["pos"][1]
             d = hyp(px - x, py - y)
             eta = d / max(1.0, me["stats"]["walk_speed"])
-            if d > 220 or not self.in_safe(px, py, safe):
+            if d > (350 if DROP_RUSH else 220) or not self.in_safe(px, py, safe):
                 continue
             if dr["lands_in"] > eta + 6:
                 continue
-            if any(hyp(e["m"]["pos"][0] - px, e["m"]["pos"][1] - py) < 70 for e in enemies):
+            if any(hyp(e["m"]["pos"][0] - px, e["m"]["pos"][1] - py) < (45 if DROP_RUSH else 70) and (e["vis"] or not DROP_RUSH) for e in enemies):
                 continue
             if dr.get("holder") not in (None, me["id"]):
                 continue

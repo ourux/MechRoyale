@@ -161,6 +161,8 @@ class Match:
         self._spawn_loot()
         self.things = []
         self._spawn_things()
+        self.drops = []   # dicts: id, pos, called, lands, progress, holder
+        self.next_drop = 20000
 
     # ---- setup
     def _walkable(self, x, y):
@@ -249,6 +251,52 @@ class Match:
 
     def targets(self):
         return self.mechs + [t for t in self.things if t.alive]
+
+    def drops_step(self):
+        dc = CFG["drops"]
+        for tcall in dc["times"]:
+            if abs(self.t - tcall) < DT / 2 and not any(abs(d["called"] - tcall) < 0.01 for d in self.drops):
+                z = self.zone_obs()
+                for _ in range(200):
+                    a = self.rng.uniform(0, 2 * math.pi)
+                    r = z["next_radius"] * dc["spread"] * math.sqrt(self.rng.random())
+                    x, y = z["next_center"][0] + math.cos(a) * r, z["next_center"][1] + math.sin(a) * r
+                    if self._walkable(x, y):
+                        break
+                self.drops.append({"id": self.next_drop, "pos": [x, y, self.M.gz(x, y)], "called": tcall,
+                                   "lands": tcall + dc["fall_s"], "progress": 0.0, "holder": None, "done": False})
+                self.next_drop += 1
+                self.sounds.append((self.t, "drop", x, y, -1))
+        for d in self.drops:
+            if d["done"] or self.t < d["lands"]:
+                continue
+            inside = [m for m in self.mechs if m.alive and hyp(m.x - d["pos"][0], m.y - d["pos"][1]) <= dc["radius"] and abs(m.z - d["pos"][2]) < 5]
+            if not inside:
+                d["holder"], d["progress"] = None, 0.0
+            elif len(inside) == 1:
+                m = inside[0]
+                if d["holder"] != m.id:
+                    d["holder"], d["progress"] = m.id, 0.0
+                d["progress"] += DT
+                if d["progress"] >= dc["capture_s"]:
+                    d["done"] = True
+                    old = m.max_hp()
+                    m.cubes += dc["cubes"]
+                    m.hp = m.max_hp()
+                    m.energy = m.stats["energy"]
+                    m.events.append({"type": "drop", "id": d["id"], "cubes": m.cubes})
+                    self.maybe_offer(m)
+            # two or more: frozen
+
+    def drops_obs(self):
+        out = []
+        for d in self.drops:
+            if d["done"]:
+                continue
+            out.append({"id": d["id"], "pos": list(d["pos"]), "radius": CFG["drops"]["radius"],
+                        "lands_in": round(max(0.0, d["lands"] - self.t), 2), "capture_s": CFG["drops"]["capture_s"],
+                        "progress": round(d["progress"], 2), "holder": d["holder"]})
+        return out
 
     def thing_kill(self, th, src):
         th.alive = False
@@ -388,7 +436,7 @@ class Match:
                          "in_zone": hyp(m.x - cx, m.y - cy) <= cr,
                          "weapons": [self.weapon_obs(m, w) for w in m.weapons], "stats": s},
                 "mechs": mechs, "projectiles": [], "crates": crates, "cubes": cubes, "pickups": pickups,
-                "sounds": sounds, "beams": [], "events": ev, "drops": [], "zone": self.zone_obs(), "offer": m.offer}
+                "sounds": sounds, "beams": [], "events": ev, "drops": self.drops_obs(), "zone": self.zone_obs(), "offer": m.offer}
 
     # ---- actions
     def apply_action(self, m, a):
@@ -834,6 +882,7 @@ class Match:
             for th in self.things:
                 if th.alive and th.kind == "npc":
                     self.npc_step(th)
+            self.drops_step()
             self.step_bullets()
             for m in self.mechs:
                 if m.alive:
