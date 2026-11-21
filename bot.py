@@ -174,7 +174,7 @@ AVOID_SHOOT = 0.0
 PREF_RANGE = 140.0
 PREF_RANGE_FFA = 140.0  # range once a death we didn't cause shows this is a free-for-all
 PRACTICE_ENGAGE = 0.0   # 1: until FFA is detected, fight every visible mech within AIMED_RANGE (all are hunters)
-WEAPON_HUNT = 1.0       # 1: with no second weapon, value weapon pickups much higher and look farther
+WEAPON_HUNT = 0.0       # 1: with no second weapon, value weapon pickups much higher and look farther
 STRAFE_MIN = 0.45
 STRAFE_MAX = 1.25
 FLIP_P = 0.6
@@ -183,7 +183,7 @@ FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
 RELOAD_COVER = 0.0  # 1: break line of sight while the gun reloads (and the laser is not ready)
 DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before other loot, from farther away
-LOOT_SCAN = 1.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
+LOOT_SCAN = 0.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
@@ -195,7 +195,7 @@ NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-laser1st"
+    name = "vmech-mrm140"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
