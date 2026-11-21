@@ -205,7 +205,7 @@ FLEE_FFA = 0.0       # once a free-for-all is detected: run from anyone approach
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
-SEED_SALT = 6        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 7        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -509,7 +509,7 @@ class Bot:
                 alone = others == 0
                 threat = (e["vis"] and d < AIMED_RANGE and alone and hpf > PICK_HP) \
                     or (e["hot"] and d < 60) or (e["vis"] and d < 30)
-            if HUNT_LONE:
+            if HUNT_LONE and self.ffa:
                 p0 = m["pos"]
                 others = 0
                 for tid, tr in self.tracks.items():
@@ -674,7 +674,7 @@ class Bot:
                 hx, hy = fx + dx / dl * ring, fy + dy / dl * ring
             else:
                 hx, hy = fx, fy
-            if HUNT_LONE and M is not None:
+            if HUNT_LONE and self.ffa and M is not None:
                 goal = self.hunt_goal(obs, me, (fx, fy, fr), t)
                 mode = "hunt"
                 if goal is not None and hyp(goal[0] - x, goal[1] - y) > 4:
