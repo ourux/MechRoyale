@@ -214,9 +214,9 @@ HIDE_UNTIL_ALIVE = 3
 DODGE = 1.0          # dodge incoming bullets (closest approach < radius within 0.7 s) and laser charges aimed at us
 DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
-THREAT_BOOST = 55.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
+THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 31        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 32        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
