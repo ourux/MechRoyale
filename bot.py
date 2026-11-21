@@ -215,7 +215,8 @@ DODGE = 1.0          # dodge incoming bullets (closest approach < radius within 
 DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 30.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
-SEED_SALT = 29        # varies the bot's own random choices (strafe timing etc.); same play strength
+PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
+SEED_SALT = 30        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -1126,6 +1127,8 @@ class Bot:
         loot_r = 1e9 if t < 200 and obs.get("alive", 16) > 6 else 45.0
         if HIDE and t < HIDE_UNTIL_T and obs.get("alive", 16) > HIDE_UNTIL_ALIVE:
             loot_r = 120.0 if t < 45 else 30.0
+        if PRACTICE_LOOT and not self.ffa:
+            loot_r = 1e9
         for p in obs["pickups"]:
             v = self.wanted_pickup(p["kind"], me)
             if v <= 0 or t - self.take_fail.get(p["id"], -99) < 3:
@@ -1139,6 +1142,8 @@ class Bot:
             s = (60.0 * v) / (d + 15)
             if (WEAPON_HUNT or (LIGHTNING_PRACTICE and not self.ffa)) and (me["weapons"][1] is None or (p["kind"] == "lightning" and not any(w and w["kind"] == "lightning" for w in me["weapons"]))):
                 s *= 4.0
+            if PRACTICE_LOOT and not self.ffa and p["kind"] == "laser" and not any(w and w["kind"] == "laser" for w in me["weapons"]):
+                s *= 3.0
             if s > bs:
                 best, bs = (px, py), s
         for c in obs["cubes"]:
@@ -1193,6 +1198,8 @@ class Bot:
         eye = z + me["stats"].get("eye_height", 8.0)
         best = None
         late = obs["t"] > 200 or obs.get("alive", 16) <= 6 or (HIDE and 45 < obs["t"] < HIDE_UNTIL_T)
+        if PRACTICE_LOOT and not self.ffa:
+            late = False
         for n in npcs:
             p = n["pos"]
             d = hyp(p[0] - x, p[1] - y)
