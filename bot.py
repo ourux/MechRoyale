@@ -170,7 +170,14 @@ HOLD_RING = 0.7
 RETREAT_HP = 0.45
 AVOID_RANGE = 150.0
 FAR_HOT = 1e9        # a mech hitting us from beyond this range is avoided, not fought, unless we are clearly ahead
-AVOID_SHOOT = 0.0    # 1: shoot back at a hot mech while breaking line of sight
+AVOID_SHOOT = 0.0
+PREF_RANGE = 70.0
+STRAFE_MIN = 0.45
+STRAFE_MAX = 1.25
+FLIP_P = 0.6
+AIM_TOL = 2.0
+FIGHT_BOOST_E = 45.0
+STRAFE_W = 0.95    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
@@ -515,20 +522,20 @@ class Bot:
             if light is not None and "lightning" not in their and hpf > 0.45:
                 pref = 28.0
             elif "lightning" in their:
-                pref = 75.0
+                pref = max(PREF_RANGE, 75.0)
             else:
-                pref = 70.0
+                pref = PREF_RANGE
             if not target["vis"]:
                 # close in to get a line, but stay careful
                 pref = min(pref, max(20.0, d - 30))
             radial = max(-1.0, min(1.0, (d - pref) / 25.0))
             if t > self.side_until:
-                if random.random() < 0.6:
+                if random.random() < FLIP_P:
                     self.side = -self.side
-                self.side_until = t + random.uniform(0.45, 1.25)
+                self.side_until = t + random.uniform(STRAFE_MIN, STRAFE_MAX)
             tan = bear + self.side * PI / 2
-            vx_ = radial * math.cos(bear) + 0.95 * math.cos(tan)
-            vy_ = radial * math.sin(bear) + 0.95 * math.sin(tan)
+            vx_ = radial * math.cos(bear) + STRAFE_W * math.cos(tan)
+            vy_ = radial * math.sin(bear) + STRAFE_W * math.sin(tan)
             # don't strafe out of the zone
             if d_future > fr * 0.8:
                 zx, zy = fx - x, fy - y
@@ -536,7 +543,7 @@ class Bot:
                 vx_ += 0.8 * zx / zl
                 vy_ += 0.8 * zy / zl
             move_yaw = math.atan2(vy_, vx_)
-            boost = energy > 45 and (t - self.last_dmg_t < 1.5)
+            boost = energy > FIGHT_BOOST_E and (t - self.last_dmg_t < 1.5)
         else:
             mode = "loot"
             goal = self.pick_loot(obs, me, (fx, fy, fr), enemies, hpf)
@@ -640,7 +647,7 @@ class Bot:
             los_ok = vis if M is None else M.los(x, y, mz, P[0], P[1], P[2], step=2.0)
             err = self.aim_err(me, yaw, pitch)
             miss = err * dist
-            tol = 2.0 if kind == "mech" else 1.4
+            tol = AIM_TOL if kind == "mech" else 1.4
             if gun is not None and los_ok and dist < gun["stats"]["range"] * 0.98 and miss < tol:
                 if gun.get("ammo", 1) > 0 and gun.get("reload", 0) <= 0:
                     fire[gun_i] = True
