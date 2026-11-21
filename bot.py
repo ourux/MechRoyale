@@ -197,6 +197,7 @@ MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): 
 MRM_PERIOD = 1.0
 LASER_SNAP = 0.0     # 1: once the laser is >=80% charged, aim at its hitscan point (not the gun lead) so it releases
 FINISH_BONUS = 0.0   # practice: extra target priority for a visible hunter under 35% HP
+RETREAT_HOLD = 0.0   # 1: hold fire while retreating (still facing the attacker) so the regen timer can start
 OUTNUM_HP = 0.5      # retreat when outnumbered below this HP fraction
 RETREAT_LASER = 1.0  # 1: may charge the laser while retreating (halves speed)
 COVER_THREATS = 2    # how many nearby threats cover must hide from
@@ -857,6 +858,8 @@ class Bot:
         pmin, pmax = self.cfg["mech"].get("min_pitch", -0.7), self.cfg["mech"].get("max_pitch", 1.3)
         aim[1] = max(pmin, min(pmax, aim[1]))
         act["aim"] = [round(aim[0], 4), round(aim[1], 4)]
+        if RETREAT_HOLD and mode == "retreat":
+            hold_fire = True
         if hold_fire:
             fire = [False, False]
             if laser is not None and (laser.get("charge", 0) or 0) > 0:
