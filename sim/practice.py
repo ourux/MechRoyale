@@ -18,12 +18,17 @@ import sim
 
 TIERS = (["easy"] * 4) + (["medium"] * 4) + (["hard"] * 4) + (["expert"] * 3)
 SKILL = {  # aim sigma (deg), reaction (s), pref range, chance of a second weapon
-    "easy": (3.2, 0.9, 60.0, 0.0),
-    "medium": (2.0, 0.6, 60.0, 0.25),
-    "hard": (1.1, 0.35, 70.0, 0.6),
-    "expert": (0.6, 0.2, 70.0, 1.0),
+    "easy": (1.6, 0.45, 60.0, 0.25),
+    "medium": (1.0, 0.3, 60.0, 0.6),
+    "hard": (0.6, 0.2, 70.0, 1.0),
+    "expert": (0.35, 0.12, 70.0, 1.0),
 }
 LATE_T = 300.0  # everyone hunts after this
+import os, json as _json
+if os.environ.get("HOUSE_SKILL"):
+    SKILL = {k: tuple(v) for k, v in _json.loads(os.environ["HOUSE_SKILL"]).items()}
+if os.environ.get("HOUSE_LATE"):
+    LATE_T = float(os.environ["HOUSE_LATE"])
 
 
 class HouseStub:
