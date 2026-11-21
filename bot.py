@@ -223,10 +223,12 @@ NO_NPC_LASER = 0.0   # never charge the laser on NPC drones
 FINISH_FIRST = 1.0   # don't take the outnumbered retreat while a visible target is under 260 HP (and we are > 25%)
 TOPOFF = 1.0         # reload a partial mag when no enemy is known
 RETREAT_DUMP = 1.0   # release a laser charge right away when retreating
+ISOLATE = 1.0        # with 2+ hunters in view, strafe to the side that breaks line of sight to the others and keeps it on the target
+ISO_STEP = 10.0
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 48        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 49        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -251,6 +253,7 @@ class Bot:
         self.tracks = {}          # id -> dict(pos, vel, t, hp, max_hp, weapons, cubes)
         self.attackers = {}       # id -> last time it damaged us
         self.last_dmg_t = -99.0
+        self.iso_t = -99.0
         self.last_dmg_bearing = None
         self.dmg_window = []      # (t, amount)
         self.side = 1
@@ -645,6 +648,32 @@ class Bot:
                 if random.random() < FLIP_P:
                     self.side = -self.side
                 self.side_until = t + random.uniform(STRAFE_MIN, STRAFE_MAX)
+            if ISOLATE and M is not None and target["vis"]:
+                others_ = [e for e in enemies if e is not target and e["vis"] and e["d"] < 180]
+                if others_ and t > self.iso_t:
+                    self.iso_t = t + 0.3
+                    sc_ = {}
+                    for sg in (1, -1):
+                        a_ = bear + sg * PI / 2
+                        qx, qy = x + math.cos(a_) * ISO_STEP, y + math.sin(a_) * ISO_STEP
+                        if self.solid(qx, qy, z, 3.0) if hasattr(self, "solid") else False:
+                            sc_[sg] = -9.0
+                            continue
+                        qz = z + 8.0
+                        v_ = 0.0
+                        if M.los(qx, qy, qz, tp[0], tp[1], tp[2] + 4.5 * target["sz"]):
+                            v_ += 1.0
+                        for e_ in others_:
+                            op = e_["m"]["pos"]
+                            if not M.los(qx, qy, qz, op[0], op[1], op[2] + 4.5 * e_["sz"]):
+                                v_ += 1.5
+                            v_ += 0.01 * (hyp(qx - op[0], qy - op[1]) - e_["d"])
+                        if not self.in_safe(qx, qy, (fx, fy, fr)):
+                            v_ -= 3.0
+                        sc_[sg] = v_
+                    if abs(sc_[1] - sc_[-1]) >= 0.5:
+                        self.side = 1 if sc_[1] > sc_[-1] else -1
+                        self.side_until = t + 0.5
             tan = bear + self.side * PI / 2
             vx_ = radial * math.cos(bear) + STRAFE_W * math.cos(tan)
             vy_ = radial * math.sin(bear) + STRAFE_W * math.sin(tan)
