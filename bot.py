@@ -173,8 +173,8 @@ FAR_HOT = 1e9        # a mech hitting us from beyond this range is avoided, not 
 AVOID_SHOOT = 0.0
 PREF_RANGE = 110.0
 PREF_RANGE_FFA = 110.0  # range once a death we didn't cause shows this is a free-for-all
-PRACTICE_ENGAGE = 0.0   # 1: until FFA is detected, fight every visible mech within AIMED_RANGE (all are hunters)
-WEAPON_HUNT = 0.0       # 1: with no second weapon, value weapon pickups much higher and look farther
+PRACTICE_ENGAGE = 1.0   # 1: until FFA is detected, fight every visible mech within AIMED_RANGE (all are hunters)
+WEAPON_HUNT = 1.0       # 1: with no second weapon, value weapon pickups much higher and look farther
 STRAFE_MIN = 0.45
 STRAFE_MAX = 1.25
 FLIP_P = 0.6
@@ -187,7 +187,7 @@ NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-v4"
+    name = "vmech-v5"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
