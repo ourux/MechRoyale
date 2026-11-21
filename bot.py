@@ -213,7 +213,9 @@ HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
 DODGE = 1.0          # dodge incoming bullets (closest approach < radius within 0.7 s) and laser charges aimed at us
 DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
-SEED_SALT = 28        # varies the bot's own random choices (strafe timing etc.); same play strength
+LETHAL = 1.0         # release a partial laser charge when it already kills the target
+THREAT_BOOST = 30.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
+SEED_SALT = 29        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -799,6 +801,9 @@ class Bot:
                 if (laser_ and energy > 25) or (DODGE_BOOST and energy > DODGE_BOOST):
                     act["boost"] = True
 
+        if THREAT_BOOST and energy > THREAT_BOOST and act["move"] != [0.0, 0.0] and mode != "hold" and ((target is not None and target["vis"] and target["engage"]) or t - self.last_dmg_t < 2.5):
+            act["boost"] = True
+
         # ---- aim & fire
         fire = [False, False]
         aim = None
@@ -839,7 +844,16 @@ class Bot:
                 worth = kind == "mech" or kind == "npc"
                 if charge > 0:
                     hold_max = lfull + self.cfg["weapons"]["laser"].get("hold_s", 2.0)
-                    if charge >= lfull * 0.97 and l_los and lerr < 1.6:
+                    lst = laser["stats"]
+                    lethal = False
+                    if LETHAL and kind == "mech" and target is not None and target["m"].get("hp") is not None and charge >= lst.get("min_charge", 0.15):
+                        ccfg = self.cfg.get("cubes", {})
+                        dmg = lst.get("damage", 315) * (lst.get("min_frac", 0.35) + (1 - lst.get("min_frac", 0.35)) * min(1.0, charge / lfull))
+                        dmg *= 1 + ccfg.get("damage_per_cube", 0) * min(me.get("cubes", 0), ccfg.get("stat_cap", 0))
+                        if any((w_ == "mortar" or (isinstance(w_, dict) and w_.get("kind") == "mortar")) for w_ in target["m"].get("weapons", [])):
+                            dmg *= 1 + lst.get("cookoff", 0.6)
+                        lethal = dmg * 0.8 >= target["m"]["hp"]
+                    if (charge >= lfull * 0.97 or lethal) and l_los and lerr < 1.6:
                         fire[laser_i] = False  # release -> fire
                     elif charge > hold_max - 0.25 and l_los and lerr < 3.0:
                         fire[laser_i] = False
