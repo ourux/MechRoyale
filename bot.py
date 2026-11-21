@@ -225,10 +225,11 @@ TOPOFF = 1.0         # reload a partial mag when no enemy is known
 RETREAT_DUMP = 1.0   # release a laser charge right away when retreating
 ISOLATE = 1.0        # with 2+ hunters in view, strafe to the side that breaks line of sight to the others and keeps it on the target
 ISO_STEP = 10.0
+COVER_FIGHT = 1.0    # anchor fights near cover corners, isolate 1v2+ angles, duck enemy lasers and dry reloads
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 49        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 50        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -254,6 +255,7 @@ class Bot:
         self.attackers = {}       # id -> last time it damaged us
         self.last_dmg_t = -99.0
         self.iso_t = -99.0
+        self.fspot, self.fspot_t, self.fspot_tid = None, -99.0, None
         self.last_dmg_bearing = None
         self.dmg_window = []      # (t, amount)
         self.side = 1
@@ -685,7 +687,59 @@ class Bot:
                 vy_ += 0.8 * zy / zl
             move_yaw = math.atan2(vy_, vx_)
             boost = energy > FIGHT_BOOST_E and (t - self.last_dmg_t < 1.5)
-            if RELOAD_COVER and gun is not None and gun.get("reload", 0) > 0.5 and target["vis"] \
+            if COVER_FIGHT and M is not None:
+                vis_others = [e for e in enemies if e is not target and e["vis"] and e["d"] < 190]
+                fsp = self.find_fight_spot(obs, target, enemies, (fx, fy, fr), pref, t_start)
+                enemy_laser = any(e["vis"] and e["m"].get("charging") and aimed_at_me(e["m"]) for e in enemies)
+                th_ = target["m"].get("hp", 1400)
+                finishing = target["vis"] and th_ < 260 and hpf > 0.25
+                my_charging = laser is not None and (laser.get("charge", 0) or 0) > 0
+                reloading_dry = (gun is not None and gun.get("reload", 0) > 0.55 and target["vis"]
+                                 and (laser is None or (not my_charging and laser.get("cooldown", 0) > 0.45))
+                                 and (light is None or d > 42))
+                duck_now = (enemy_laser and not finishing and (not my_charging or hpf < 0.7)) or reloading_dry
+                ducked = False
+                if duck_now:
+                    cov = fsp[2] if (fsp is not None and fsp[2] is not None and hyp(fsp[2][0] - x, fsp[2][1] - y) < 20.0) else None
+                    if cov is None:
+                        cov = self.find_cover(obs, [e for e in enemies if e["vis"] or e["hot"]] or [target], (fx, fy, fr), t_start)
+                    if cov is not None and hyp(cov[0] - x, cov[1] - y) < 22.0:
+                        mode = "duck"
+                        gx, gy = cov
+                        boost = energy > 22
+                        ducked = True
+                if not ducked and fsp is not None:
+                    fx_, fy_, _, fexp = fsp
+                    df = hyp(fx_ - x, fy_ - y)
+                    if df > 4.0:
+                        to_f = math.atan2(fy_ - y, fx_ - x)
+                        if vis_others:
+                            move_yaw = to_f
+                            if energy > 25:
+                                boost = True
+                        else:
+                            vx_ = 0.85 * math.cos(to_f) + 0.35 * math.cos(tan)
+                            vy_ = 0.85 * math.sin(to_f) + 0.35 * math.sin(tan)
+                            move_yaw = math.atan2(vy_, vx_)
+                    else:
+                        others_ = [e for e in enemies if e is not target and e["d"] < 190]
+                        to_f = math.atan2(fy_ - y, fx_ - x) if df > 0.5 else tan
+                        if others_:
+                            def _safe_step(ang):
+                                sx_, sy_ = x + math.cos(ang) * 4.5, y + math.sin(ang) * 4.5
+                                sz_ = M.surface(sx_, sy_, z + 2)
+                                return not any(M.los(o["m"]["pos"][0], o["m"]["pos"][1], o["m"]["pos"][2] + 8.0 * o["sz"], sx_, sy_, sz_ + 6.0, 2.5) for o in others_[:3])
+                            if not _safe_step(tan):
+                                alt = bear - self.side * PI / 2
+                                if _safe_step(alt):
+                                    self.side = -self.side
+                                    tan = alt
+                                else:
+                                    tan = to_f if df > 1.2 else (bear if self.side > 0 else bear + PI)
+                        vx_ = 0.4 * math.cos(to_f) + 0.85 * math.cos(tan)
+                        vy_ = 0.4 * math.sin(to_f) + 0.85 * math.sin(tan)
+                        move_yaw = math.atan2(vy_, vx_)
+            elif RELOAD_COVER and gun is not None and gun.get("reload", 0) > 0.5 and target["vis"] \
                     and (laser is None or laser.get("cooldown", 0) > 0.5) and (light is None or d > 45):
                 cov = self.find_cover(obs, [e for e in enemies if e["vis"] or e["hot"]] or [target], (fx, fy, fr), t_start)
                 if cov is not None:
@@ -782,7 +836,7 @@ class Bot:
             moved = 99.0
             if len(self.hist) > 5 and t - self.hist[0][0] > 0.9:
                 moved = hyp(x - self.hist[0][1], y - self.hist[0][2])
-            if (not ok or (moved < 1.2 * move_mag and not (STUCK_FIX and mode == "fight"))) and t > self.jet_until and energy > 55:
+            if (not ok or (moved < 1.2 * move_mag and not (STUCK_FIX and mode in ("fight", "duck")))) and t > self.jet_until and energy > 55:
                 self.jet_until = t + 2.2
             if t < self.jet_until:
                 if me["grounded"]:
@@ -808,7 +862,7 @@ class Bot:
                 break
 
         # ---- bullet / laser-charge dodge
-        if DODGE and mode != "unstuck":
+        if DODGE and mode not in ("unstuck", "duck"):
             st_ = me["stats"]
             cz_ = z + st_.get("height", 9.0) * 0.56
             reach_ = st_.get("radius", 3.0) + 1.1
@@ -918,7 +972,7 @@ class Bot:
                         if any((w_ == "mortar" or (isinstance(w_, dict) and w_.get("kind") == "mortar")) for w_ in target["m"].get("weapons", [])):
                             dmg *= 1 + lst.get("cookoff", 0.6)
                         lethal = dmg * 0.8 >= target["m"]["hp"]
-                    if RETREAT_DUMP and mode == "retreat" and charge >= lst.get("min_charge", 0.15):
+                    if RETREAT_DUMP and mode in ("retreat", "duck") and charge >= lst.get("min_charge", 0.15):
                         fire[laser_i] = False  # dump it: get full escape speed back
                     elif (charge >= lfull * 0.97 or lethal) and l_los and lerr < 1.6:
                         fire[laser_i] = False  # release -> fire
@@ -926,7 +980,7 @@ class Bot:
                         fire[laser_i] = False
                     else:
                         fire[laser_i] = True
-                elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode != "retreat":
+                elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode not in ("retreat", "duck"):
                     fire[laser_i] = True
                 elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode == "retreat" and ld > 60 and RETREAT_LASER:
                     fire[laser_i] = True
@@ -1324,6 +1378,161 @@ class Bot:
                 act["take"] = p["id"]
                 act["drop"] = worst_i
                 act["fire"][worst_i] = False
+
+    def near_wall(self, px, py, pz):
+        M = self.map
+        if M is None:
+            return False
+        for k in range(8):
+            a = k * (PI / 4)
+            idx = M.idx(px + math.cos(a) * 7.5, py + math.sin(a) * 7.5)
+            if M.top[idx] > pz + 5.0 and M.base[idx] < pz + 9.0:
+                return True
+            if M.ground[idx] > pz + 4.5:
+                return True
+        return False
+
+    def find_fight_spot(self, obs, target, enemies, safe, pref, t_start):
+        M = self.map
+        if M is None:
+            return None
+        me = obs["self"]
+        t = obs["t"]
+        x, y, z = me["pos"]
+        mz_off = me["stats"].get("muzzle_height", 7.0)
+        tm = target["m"]
+        tx, ty, tz = tm["pos"]
+        tsz = target["sz"]
+        tid = tm.get("id")
+        bear = math.atan2(ty - y, tx - x)
+        others = []
+        seen_ids = {tid}
+        for e in enemies:
+            oid = e["m"].get("id")
+            if oid in seen_ids or e["d"] > 200:
+                continue
+            seen_ids.add(oid)
+            op = e["m"]["pos"]
+            others.append((e["d"], op[0], op[1], op[2] + 8.0 * e["sz"]))
+        if len(others) < 3:
+            for oid, tr in self.tracks.items():
+                if oid in seen_ids or t - tr["t"] > 8.0:
+                    continue
+                op = tr["pos"]
+                od = hyp(op[0] - x, op[1] - y)
+                if od < 170:
+                    others.append((od, op[0], op[1], op[2] + 8.0))
+        others.sort(key=lambda q: q[0])
+        others = others[:3]
+
+        def sees_tgt(px, py, pz):
+            mz_ = pz + mz_off
+            if M.los(px, py, mz_, tx, ty, tz + 4.5 * tsz, step=2.5):
+                return True
+            return bool(HIGH_AIM and M.los(px, py, mz_, tx, ty, tz + 7.65 * tsz, step=2.5))
+
+        def exp_others(px, py, pz):
+            n = 0
+            for (_, ox, oy, oz) in others:
+                if M.los(ox, oy, oz, px, py, pz + 6.0, step=2.5):
+                    n += 1
+            return n
+
+        def hidden_all(px, py, pz):
+            if M.los(tx, ty, tz + 8.0 * tsz, px, py, pz + 6.0, step=2.5):
+                return False
+            return exp_others(px, py, pz) == 0
+        if self.fspot is not None and self.fspot_tid == tid and t - self.fspot_t < 0.65:
+            fx_, fy_, dxy, fexp = self.fspot
+            if hyp(fx_ - x, fy_ - y) < 34.0 and (self.in_safe(fx_, fy_, safe) or not self.in_safe(x, y, safe)):
+                fz_ = M.surface(fx_, fy_, z + 2)
+                if sees_tgt(fx_, fy_, fz_) and exp_others(fx_, fy_, fz_) <= fexp:
+                    if dxy is not None:
+                        dz_ = M.surface(dxy[0], dxy[1], fz_ + 2)
+                        if not hidden_all(dxy[0], dxy[1], dz_):
+                            dxy = None
+                    if fexp == 0 or not others or dxy is not None:
+                        return (fx_, fy_, dxy, fexp)
+        in_safe_now = self.in_safe(x, y, safe)
+        min_dt = max(18.0, pref * 0.45)
+        max_dt = max(155.0, pref * 2.3)
+        cur_exp = exp_others(x, y, z) if others else 0
+        cands = [(x, y, 0.0)]
+        for r, off in ((9.0, 0.0), (18.0, PI / 8), (28.0, 0.0)):
+            for k in range(8):
+                a = bear + off + k * (PI / 4)
+                cands.append((x + math.cos(a) * r, y + math.sin(a) * r, r))
+        scored = []
+        for px, py, r in cands:
+            if (time.perf_counter() - t_start) > 0.014:
+                break
+            if r > 0:
+                if M.blocked(px, py, z, min(r, 9.0)):
+                    continue
+                if in_safe_now and not self.in_safe(px, py, safe):
+                    continue
+                pz = M.surface(px, py, z + 2)
+                if abs(pz - z) > 2.5:
+                    continue
+                if not self.path_clear(x, y, z, px, py):
+                    continue
+            else:
+                pz = z
+            dt = hyp(px - tx, py - ty)
+            if dt < min_dt or dt > max_dt:
+                continue
+            if not sees_tgt(px, py, pz):
+                continue
+            exp = cur_exp if r == 0 else exp_others(px, py, pz)
+            nw = self.near_wall(px, py, pz)
+            s = -exp * 16.0 + (4.0 if nw else 0.0) - abs(dt - pref) * 0.08 - r * 0.10
+            if others:
+                mdo = min(hyp(px - ox, py - oy) for (_, ox, oy, _) in others)
+                s += min(120.0, mdo) * 0.04
+            if r == 0:
+                s += 0.8
+            scored.append((s, px, py, pz, exp))
+        if not scored:
+            self.fspot = None
+            return None
+        scored.sort(key=lambda q: -q[0])
+        best = None
+        away_t = bear + PI
+        for base_s, px, py, pz, exp in scored[:4]:
+            duck_xy = None
+            for r_cov in (9.0, 14.0):
+                if duck_xy is not None or (time.perf_counter() - t_start) >= 0.018:
+                    break
+                for k in range(8):
+                    a = away_t + (k - 3.5) * (PI / 4)
+                    cx_, cy_ = px + math.cos(a) * r_cov, py + math.sin(a) * r_cov
+                    if M.blocked(cx_, cy_, pz, min(r_cov, 9.0)):
+                        continue
+                    if in_safe_now and not self.in_safe(cx_, cy_, safe):
+                        continue
+                    cz_ = M.surface(cx_, cy_, pz + 2)
+                    if abs(cz_ - pz) > 2.5:
+                        continue
+                    if not self.path_clear(px, py, pz, cx_, cy_):
+                        continue
+                    if hidden_all(cx_, cy_, cz_):
+                        duck_xy = (cx_, cy_)
+                        break
+            tot = base_s + (5.0 if (duck_xy is not None and exp == 0) else (3.5 if duck_xy is not None else 0.0))
+            if best is None or tot > best[0]:
+                best = (tot, px, py, duck_xy, exp)
+        if best is None:
+            self.fspot = None
+            return None
+        _, bx, by, bduck, bexp = best
+        if not ((others and bexp < cur_exp) or (others and bexp == 0) or bduck is not None):
+            self.fspot = None
+            return None
+        res = (bx, by, bduck, bexp)
+        self.fspot = res
+        self.fspot_t = t
+        self.fspot_tid = tid
+        return res
 
     def find_cover(self, obs, enemies, safe, t_start):
         """A nearby reachable point no visible threat can see. Cached ~1 s."""
