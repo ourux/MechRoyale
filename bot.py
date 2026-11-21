@@ -169,6 +169,8 @@ WEAK_FRAC = 0.25
 HOLD_RING = 0.7
 RETREAT_HP = 0.45
 AVOID_RANGE = 150.0
+FAR_HOT = 1e9        # a mech hitting us from beyond this range is avoided, not fought, unless we are clearly ahead
+AVOID_SHOOT = 0.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
@@ -427,7 +429,11 @@ class Bot:
             m = e["m"]
             d = e["d"]
             close = ENGAGE_CLOSE_LATE if late else ENGAGE_CLOSE
-            threat = e["hot"] or (e["vis"] and d < close) or (e["vis"] and d < AIMED_RANGE and aimed_at_me(m) and (m.get("charging") or d < 110))
+            hot = e["hot"]
+            if hot and d > FAR_HOT and not (hp > 1.3 * m.get("hp", 1400) and hpf > 0.6):
+                hot = False
+                e["far_hot"] = True
+            threat = hot or (e["vis"] and d < close) or (e["vis"] and d < AIMED_RANGE and aimed_at_me(m) and (m.get("charging") or d < 110))
             weak = m.get("hp", 1400) < WEAK_FRAC * m.get("max_hp", 1400) and hpf > 0.6 and d < 150 and e["vis"]
             if weak:
                 p = m["pos"]
@@ -489,7 +495,7 @@ class Bot:
                 ax_, ay_ = math.cos(away) + 0.5 * zx / max(1, hyp(zx, zy)), math.sin(away) + 0.5 * zy / max(1, hyp(zx, zy))
                 move_yaw = math.atan2(ay_, ax_) + self.side * 0.5
             boost = energy > 20
-        elif target is not None and not target["engage"] and target["vis"] and target["d"] < AVOID_RANGE:
+        elif target is not None and not target["engage"] and (target["vis"] or target.get("far_hot")) and (target["d"] < AVOID_RANGE or target.get("far_hot")):
             # someone else's fight or a bot not looking at us: get out of its sight, quietly
             mode = "avoid"
             cov = self.find_cover(obs, [e for e in enemies if e["vis"]], (fx, fy, fr), t_start)
@@ -498,7 +504,7 @@ class Bot:
             else:
                 tp = target["m"]["pos"]
                 move_yaw = math.atan2(y - tp[1], x - tp[0])
-            move_mag = 1.0 if target["d"] < 70 else 0.42
+            move_mag = 1.0 if (target["d"] < 70 or target.get("far_hot")) else 0.42
         elif target is not None and target["engage"]:
             mode = "fight"
             m = target["m"]
@@ -617,11 +623,11 @@ class Bot:
         if target is not None and (target["vis"] or target["d"] < 230) and (target["engage"] or mode == "retreat"):
             m = target["m"]
             shoot = (m["pos"], m["vel"], 4.5 * target["sz"], "mech", target["vis"])
-        elif target is not None and target["vis"] and target["d"] < 150:
+        elif target is not None and target["vis"] and (target["d"] < 150 or target.get("far_hot")):
             # face it (front armor) but stay silent
             m = target["m"]
             shoot = (m["pos"], m["vel"], 4.5 * target["sz"], "mech", target["vis"])
-            hold_fire = True
+            hold_fire = not (AVOID_SHOOT and target.get("far_hot"))
         elif mode in ("loot", "hold", "zone", "drop"):
             shoot = self.pick_soft_target(obs, me, npcs, hpf, enemies)
 
