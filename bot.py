@@ -5,6 +5,7 @@ Per tick: update tracks -> pick mode (zone / fight / retreat / loot / hold) -> m
 wall-aware steering -> aim with lead -> gate every trigger on aim error and line of sight.
 """
 import gc
+import heapq
 import json
 import math
 import os
@@ -152,6 +153,460 @@ class Map:
         return False
 
 
+
+
+# ---------------------------------------------------------------- nav map
+_NDIRS = (
+    (1, 0, 1.0), (1, 1, 1.4142), (0, 1, 1.0), (-1, 1, 1.4142),
+    (-1, 0, 1.0), (-1, -1, 1.4142), (0, -1, 1.0), (1, -1, 1.4142),
+)
+_RAYS12 = tuple((math.cos(k * TAU / 12.0), math.sin(k * TAU / 12.0)) for k in range(12))
+
+
+class NavMap:
+    """Coarse walkable navigation graph + precomputed static exposure & fortress scores.
+
+    Built once during hello (~0.5-1.5 s); gives O(1) exposure lookups, exposure-weighted A*
+    routing, multi-corner retreat Dijkstra, and low-exposure Home fortress selection.
+    """
+
+    def __init__(self, M, budget_s=8.0):
+        t0 = time.perf_counter()
+        self.M = M
+        w = max(16.0, M.bx1 - M.bx0)
+        h = max(16.0, M.by1 - M.by0)
+        step = max(8.0, float(math.ceil(max(w, h) / 140.0)))
+        self.step = step
+        self.inv = 1.0 / step
+        self.x0 = M.bx0 + step * 0.5
+        self.y0 = M.by0 + step * 0.5
+        self.gnx = max(2, int(w / step))
+        self.gny = max(2, int(h / step))
+        N = self.gnx * self.gny
+        self.N = N
+
+        gz = array("f", [0.0]) * N
+        wall_h = array("f", [0.0]) * N
+        walk = bytearray(N)
+        adj = bytearray(N)
+        deg = bytearray(N)
+        exp = array("f", [1.0]) * N
+        fortress = array("f", [-99.0]) * N
+        open_dir = array("f", [0.0]) * N
+
+        G, T, B = M.ground, M.top, M.base
+        gnx, gny, x0, y0 = self.gnx, self.gny, self.x0, self.y0
+
+        # 1) Walkability + coarse blocking heights
+        for gj in range(gny):
+            cy = y0 + gj * step
+            row = gj * gnx
+            for gi in range(gnx):
+                cx = x0 + gi * step
+                u = row + gi
+                k = M.idx(cx, cy)
+                g = G[k]
+                tp = T[k]
+                bs = B[k]
+                gz[u] = g
+                if tp > g + 1.3 and bs < g + 9.0:
+                    wall_h[u] = tp
+                    continue
+                wall_h[u] = g
+                # Footprint clearance check (at least 3 of 4 side offsets unblocked)
+                ok_pts = 0
+                for ox, oy in ((2.2, 0.0), (-2.2, 0.0), (0.0, 2.2), (0.0, -2.2)):
+                    if not M.blocked(cx + ox, cy + oy, g, 2.2):
+                        ok_pts += 1
+                if ok_pts >= 3:
+                    walk[u] = 1
+
+        # 2) 8-connected passable edges (diagonals require both orthogonal corners walkable)
+        for gj in range(gny):
+            cy = y0 + gj * step
+            row = gj * gnx
+            for gi in range(gnx):
+                u = row + gi
+                if not walk[u]:
+                    continue
+                cx = x0 + gi * step
+                zu = gz[u]
+                mask = 0
+                cnt = 0
+                for d_i, (di, dj, dm) in enumerate(_NDIRS):
+                    ni, nj = gi + di, gj + dj
+                    if ni < 0 or nj < 0 or ni >= gnx or nj >= gny:
+                        continue
+                    v = nj * gnx + ni
+                    if not walk[v]:
+                        continue
+                    if di and dj:
+                        if not (walk[row + ni] and walk[nj * gnx + gi]):
+                            continue
+                    zv = gz[v]
+                    if abs(zv - zu) > 1.2 + 0.85 * step * dm:
+                        continue
+                    mx_, my_ = cx + di * step * 0.5, cy + dj * step * 0.5
+                    if M.blocked(mx_, my_, min(zu, zv), step * 0.5):
+                        continue
+                    mask |= (1 << d_i)
+                    cnt += 1
+                adj[u] = mask
+                deg[u] = cnt
+
+        # 3) Coarse-grid 12-ray static exposure + open firing lane + fortress quality
+        # Max ray march: 13 coarse cells (~104-117 m)
+        max_r = 13
+        med_r = 5
+        long_r = 11
+        ray_steps = []
+        for (rc, rs) in _RAYS12:
+            ray_steps.append(tuple((int(round(rc * s)), int(round(rs * s))) for s in range(1, max_r + 1)))
+
+        deadline = t0 + budget_s
+        for gj in range(gny):
+            if (gj & 7) == 0 and time.perf_counter() > deadline:
+                break
+            row = gj * gnx
+            for gi in range(gnx):
+                u = row + gi
+                if not walk[u] or deg[u] < 2:
+                    continue
+                eye = gz[u] + 6.5
+                n_med = 0
+                n_long = 0
+                n_wall_close = 0
+                ox_sum = oy_sum = 0.0
+                for r_i, pts in enumerate(ray_steps):
+                    reach = max_r
+                    for s_i, (di, dj) in enumerate(pts):
+                        ni, nj = gi + di, gj + dj
+                        if ni < 0 or nj < 0 or ni >= gnx or nj >= gny:
+                            reach = s_i
+                            break
+                        if wall_h[nj * gnx + ni] > eye:
+                            reach = s_i
+                            break
+                    if reach <= 2:
+                        n_wall_close += 1
+                    if reach >= med_r:
+                        n_med += 1
+                        rc, rs = _RAYS12[r_i]
+                        ox_sum += rc * reach
+                        oy_sum += rs * reach
+                    if reach >= long_r:
+                        n_long += 1
+                e_val = (0.6 * n_med + 0.4 * n_long) / 12.0
+                exp[u] = e_val
+                if ox_sum or oy_sum:
+                    open_dir[u] = math.atan2(oy_sum, ox_sum)
+                if deg[u] >= 3 and n_med >= 1:
+                    # Sweet spot: sheltered on 65-85% of directions, tight wall cover, >=3 exits, 1-5 firing lanes
+                    lane_bonus = 1.6 if (1 <= n_med <= 5) else -1.5
+                    fortress[u] = (1.0 - e_val) * 10.0 + min(n_wall_close, 8) * 0.65 + lane_bonus + min(deg[u], 5) * 0.3
+
+        # Post-pass: bonus for fortress cells with an adjacent even-lower-exposure duck cell
+        for gj in range(gny):
+            row = gj * gnx
+            for gi in range(gnx):
+                u = row + gi
+                if fortress[u] < 0:
+                    continue
+                eu = exp[u]
+                m = adj[u]
+                for d_i, (di, dj, _) in enumerate(_NDIRS):
+                    if not (m & (1 << d_i)):
+                        continue
+                    v = (gj + dj) * gnx + (gi + di)
+                    if exp[v] < eu - 0.08 or exp[v] < 0.22:
+                        fortress[u] += 2.0
+                        break
+
+        self.gz = gz
+        self.wall_h = wall_h
+        self.walk = walk
+        self.adj = adj
+        self.deg = deg
+        self.exp = exp
+        self.fortress = fortress
+        self.open_dir = open_dir
+
+        # Reusable zero-allocation search buffers
+        self._stamp = array("I", [0]) * N
+        self._g = array("f", [0.0]) * N
+        self._par = array("i", [-1]) * N
+        self._sid = 0
+        self.build_ms = (time.perf_counter() - t0) * 1000.0
+
+    def cell(self, x, y):
+        gi = int((x - self.x0) * self.inv + 0.5)
+        gj = int((y - self.y0) * self.inv + 0.5)
+        if gi < 0:
+            gi = 0
+        elif gi >= self.gnx:
+            gi = self.gnx - 1
+        if gj < 0:
+            gj = 0
+        elif gj >= self.gny:
+            gj = self.gny - 1
+        return gj * self.gnx + gi
+
+    def xy(self, u):
+        gj, gi = divmod(u, self.gnx)
+        return self.x0 + gi * self.step, self.y0 + gj * self.step
+
+    def exp_at(self, x, y):
+        return self.exp[self.cell(x, y)]
+
+    def nearest_walkable(self, x, y):
+        u = self.cell(x, y)
+        if self.walk[u] and self.deg[u] > 0:
+            return u
+        gj0, gi0 = divmod(u, self.gnx)
+        gnx, gny, walk, deg = self.gnx, self.gny, self.walk, self.deg
+        best, bd = None, 1e18
+        for rad in (1, 2, 3):
+            for dj in range(-rad, rad + 1):
+                nj = gj0 + dj
+                if nj < 0 or nj >= gny:
+                    continue
+                for di in range(-rad, rad + 1):
+                    if abs(di) != rad and abs(dj) != rad:
+                        continue
+                    ni = gi0 + di
+                    if ni < 0 or ni >= gnx:
+                        continue
+                    v = nj * gnx + ni
+                    if walk[v] and deg[v] > 0:
+                        cx = self.x0 + ni * self.step
+                        cy = self.y0 + nj * self.step
+                        d2 = (cx - x) ** 2 + (cy - y) ** 2
+                        if d2 < bd:
+                            best, bd = v, d2
+            if best is not None:
+                return best
+        return None
+
+    def _next_stamp(self):
+        self._sid += 1
+        if self._sid >= 0xFFFFFFF0:
+            self._stamp = array("I", [0]) * self.N
+            self._sid = 1
+        return self._sid
+
+    def find_path(self, sx, sy, gx, gy, threats=(), exp_w=1.4, threat_w=3.5, max_pops=650, t_deadline=None):
+        """Exposure- and threat-weighted A* returning world [(x, y), ...] waypoints."""
+        su = self.nearest_walkable(sx, sy)
+        gu = self.nearest_walkable(gx, gy)
+        if su is None or gu is None:
+            return None
+        if su == gu:
+            return [(gx, gy)]
+
+        sid = self._next_stamp()
+        stamp, gcost, par = self._stamp, self._g, self._par
+        adj, exp = self.adj, self.exp
+        gnx, step, x0, y0 = self.gnx, self.step, self.x0, self.y0
+        ggj, ggi = divmod(gu, gnx)
+        tx_g, ty_g = x0 + ggi * step, y0 + ggj * step
+        tr_r = 115.0
+        tr_r2 = tr_r * tr_r
+        has_th = bool(threats)
+        h_mul = 1.0 + exp_w * 0.55
+
+        stamp[su] = sid
+        gcost[su] = 0.0
+        par[su] = -1
+        h0 = hyp(tx_g - sx, ty_g - sy)
+        pq = [(h0 * h_mul, su)]
+        best_u, best_h = su, h0
+        pops = 0
+
+        while pq and pops < max_pops:
+            if (pops & 63) == 0 and t_deadline is not None and time.perf_counter() > t_deadline:
+                break
+            f, u = heapq.heappop(pq)
+            if u == gu:
+                best_u = gu
+                break
+            gu_val = gcost[u]
+            pops += 1
+            uj, ui = divmod(u, gnx)
+            m = adj[u]
+            for d_i, (di, dj, dm) in enumerate(_NDIRS):
+                if not (m & (1 << d_i)):
+                    continue
+                vi, vj = ui + di, uj + dj
+                v = vj * gnx + vi
+                vx = x0 + vi * step
+                vy = y0 + vj * step
+                pen = exp_w * exp[v]
+                if has_th:
+                    for (thx, thy) in threats:
+                        d2 = (vx - thx) ** 2 + (vy - thy) ** 2
+                        if d2 < tr_r2:
+                            pen += threat_w * (1.0 - math.sqrt(d2) / tr_r)
+                ng = gu_val + step * dm * (1.0 + pen)
+                if stamp[v] != sid or ng < gcost[v]:
+                    stamp[v] = sid
+                    gcost[v] = ng
+                    par[v] = u
+                    hv = hyp(tx_g - vx, ty_g - vy)
+                    if hv < best_h:
+                        best_h, best_u = hv, v
+                    heapq.heappush(pq, (ng + hv * h_mul, v))
+
+        if best_u == su:
+            return None
+        path = []
+        cur = best_u
+        while cur != -1 and cur != su:
+            path.append(self.xy(cur))
+            cur = par[cur]
+        path.reverse()
+        if best_u == gu:
+            path[-1] = (gx, gy)
+        return path
+
+    def find_retreat(self, sx, sy, sz, threats_full, safe, max_pops=300, t_deadline=None):
+        """Multi-corner Dijkstra retreat: finds a truly hidden low-exposure pocket around buildings."""
+        su = self.nearest_walkable(sx, sy)
+        if su is None or not threats_full:
+            return None
+        M = self.M
+        sid = self._next_stamp()
+        stamp, gcost, par = self._stamp, self._g, self._par
+        adj, exp, gz = self.adj, self.exp, self.gz
+        gnx, step, x0, y0 = self.gnx, self.step, self.x0, self.y0
+        fx, fy, fr = safe
+        in_safe_now = hyp(sx - fx, sy - fy) < fr
+        th_xy = [(t_[0], t_[1]) for t_ in threats_full]
+
+        stamp[su] = sid
+        gcost[su] = 0.0
+        par[su] = -1
+        pq = [(0.0, su)]
+        cands = []
+        pops = 0
+
+        while pq and pops < max_pops:
+            if (pops & 63) == 0 and t_deadline is not None and time.perf_counter() > t_deadline:
+                break
+            d_u, u = heapq.heappop(pq)
+            if d_u > gcost[u] + 1e-4:
+                continue
+            pops += 1
+            uj, ui = divmod(u, gnx)
+            ux, uy = x0 + ui * step, y0 + uj * step
+            if d_u >= 14.0:
+                dsafe = hyp(ux - fx, uy - fy)
+                if not in_safe_now or dsafe < fr * 0.96:
+                    md_th = min(hyp(ux - thx, uy - thy) for (thx, thy) in th_xy)
+                    pre = min(140.0, md_th) * 0.14 - exp[u] * 9.0 - d_u * 0.08 - dsafe * 0.012
+                    cands.append((pre, u, ux, uy, gz[u]))
+            if d_u > 110.0:
+                continue
+            m = adj[u]
+            for d_i, (di, dj, dm) in enumerate(_NDIRS):
+                if not (m & (1 << d_i)):
+                    continue
+                vi, vj = ui + di, uj + dj
+                v = vj * gnx + vi
+                vx, vy = x0 + vi * step, y0 + vj * step
+                pen = 0.8 * exp[v]
+                for (thx, thy) in th_xy:
+                    d2 = (vx - thx) ** 2 + (vy - thy) ** 2
+                    if d2 < 2500.0:  # < 50 m
+                        pen += 2.5 * (1.0 - math.sqrt(d2) / 50.0)
+                ng = d_u + step * dm * (1.0 + pen)
+                if stamp[v] != sid or ng < gcost[v]:
+                    stamp[v] = sid
+                    gcost[v] = ng
+                    par[v] = u
+                    heapq.heappush(pq, (ng, v))
+
+        if not cands:
+            return None
+        cands.sort(key=lambda q: -q[0])
+        best = None
+        for pre, u, ux, uy, uz in cands[:14]:
+            if t_deadline is not None and time.perf_counter() > t_deadline:
+                break
+            hidden = True
+            for (thx, thy, thz) in threats_full:
+                if M.los(thx, thy, thz, ux, uy, uz + 6.0, step=2.5):
+                    hidden = False
+                    break
+            sc = pre + (30.0 if hidden else 0.0)
+            if best is None or sc > best[0]:
+                best = (sc, u, ux, uy, hidden)
+        if best is None:
+            return None
+        _, bu, bx, by, hidden = best
+        path = []
+        cur = bu
+        while cur != -1 and cur != su:
+            path.append(self.xy(cur))
+            cur = par[cur]
+        path.reverse()
+        return path, (bx, by), hidden
+
+    def pick_home(self, x, y, safe, next_zone, tracks, t, cur_home=None):
+        """Pick the best low-exposure fortress/choke cell inside the safe circle."""
+        fx, fy, fr = safe
+        ncx, ncy, nr = next_zone
+        r_lim = max(12.0, fr * 0.84)
+        r_lim2 = r_lim * r_lim
+        stride = 1 if r_lim <= 180.0 else (2 if r_lim <= 300.0 else 3)
+
+        i0 = max(0, int((fx - r_lim - self.x0) * self.inv))
+        i1 = min(self.gnx - 1, int((fx + r_lim - self.x0) * self.inv) + 1)
+        j0 = max(0, int((fy - r_lim - self.y0) * self.inv))
+        j1 = min(self.gny - 1, int((fy + r_lim - self.y0) * self.inv) + 1)
+
+        recent = []
+        for tr in tracks.values():
+            if t - tr["t"] < 15.0:
+                recent.append((tr["pos"][0], tr["pos"][1]))
+
+        fort, walk, open_dir = self.fortress, self.walk, self.open_dir
+        gnx, step, x0, y0 = self.gnx, self.step, self.x0, self.y0
+        cur_u = cur_home[2] if cur_home is not None else -1
+        best = None
+
+        for gj in range(j0, j1 + 1, stride):
+            cy = y0 + gj * step
+            dy = cy - fy
+            dy2 = dy * dy
+            row = gj * gnx
+            for gi in range(i0, i1 + 1, stride):
+                cx = x0 + gi * step
+                dx = cx - fx
+                if dx * dx + dy2 > r_lim2:
+                    continue
+                u = row + gi
+                if not walk[u]:
+                    continue
+                fs = fort[u]
+                if fs < 0.0:
+                    continue
+                sc = fs - hyp(cx - x, cy - y) * 0.015
+                if hyp(cx - ncx, cy - ncy) <= max(10.0, nr * 0.80):
+                    sc += 2.2
+                if recent:
+                    md = min(hyp(cx - rx, cy - ry) for (rx, ry) in recent)
+                    if md < 90.0:
+                        sc -= (90.0 - md) * 0.05
+                if u == cur_u:
+                    sc += 2.0
+                if best is None or sc > best[0]:
+                    best = (sc, cx, cy, u, open_dir[u])
+
+        if best is None:
+            return None
+        return (best[1], best[2], best[3], best[4])
+
+
 # ---------------------------------------------------------------- helpers
 UPGRADE_PRIORITY = [
     "armor", "nanites", "plating", "laser_damage", "gun_damage", "laser_charge",
@@ -225,11 +680,12 @@ TOPOFF = 1.0         # reload a partial mag when no enemy is known
 RETREAT_DUMP = 1.0   # release a laser charge right away when retreating
 ISOLATE = 1.0        # with 2+ hunters in view, strafe to the side that breaks line of sight to the others and keeps it on the target
 ISO_STEP = 10.0
-COVER_FIGHT = 0.0    # anchor fights near cover corners, isolate 1v2+ angles, duck enemy lasers and dry reloads
+COVER_FIGHT = 1.0    # anchor fights near cover corners, isolate 1v2+ angles, duck enemy lasers and dry reloads
+NAV_MODEL = 1.0      # precomputed coarse NavMap: exposure-weighted A*, multi-corner retreat, Home fortress
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 54        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 56        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -244,8 +700,12 @@ class Bot:
         random.seed(hello.get("seed", 0) * 1000003 + SEED_SALT)
         d = hello.get("map", {}).get("dir", "/arena")
         self.map = None
+        self.nav = None
         try:
             self.map = Map(d)
+            if NAV_MODEL:
+                self.nav = NavMap(self.map)
+                mf.log(f"nav {self.nav.gnx}x{self.nav.gny} step={self.nav.step:.0f}m in {self.nav.build_ms:.0f} ms")
         except Exception as e:  # play blind rather than not at all
             mf.log("map load failed:", repr(e))
         gc.collect()
@@ -256,6 +716,15 @@ class Bot:
         self.last_dmg_t = -99.0
         self.iso_t = -99.0
         self.fspot, self.fspot_t, self.fspot_tid = None, -99.0, None
+        self.home = None          # (hx, hy, u, lane_yaw)
+        self.home_t = -99.0
+        self.home_zkey = None
+        self.nav_path = None      # [(x, y), ...]
+        self.nav_goal = None      # (gx, gy)
+        self.nav_t = -99.0
+        self.ret_path = None      # [(x, y), ...]
+        self.ret_dest = None      # (rx, ry)
+        self.ret_t = -99.0
         self.last_dmg_bearing = None
         self.dmg_window = []      # (t, amount)
         self.side = 1
@@ -602,13 +1071,32 @@ class Bot:
         mode = "hold"
         gx = gy = None
 
+        N = self.nav if NAV_MODEL else None
+        if N is not None:
+            nz_ = obs["zone"]
+            zkey = (round(nz_["next_center"][0], 1), round(nz_["next_center"][1], 1), round(nz_["next_radius"], 1))
+            home_bad = (self.home is None or zkey != self.home_zkey or t - self.home_t > 20.0
+                        or hyp(self.home[0] - fx, self.home[1] - fy) > fr * 0.88)
+            if home_bad:
+                nh = N.pick_home(x, y, (fx, fy, fr), (nz_["next_center"][0], nz_["next_center"][1], nz_["next_radius"]),
+                                 self.tracks, t, self.home)
+                if nh is not None:
+                    self.home = nh
+                    self.home_t = t
+                    self.home_zkey = zkey
+
         if outside_now or (zone_push and (target is None or d_future > fr + 40 or obs["zone"]["dps"] >= 60)):
             mode = "zone"
-            gx, gy = fx, fy
+            if N is not None and self.home is not None and hyp(self.home[0] - fx, self.home[1] - fy) < fr * 0.9:
+                gx, gy = self.home[0], self.home[1]
+            else:
+                gx, gy = fx, fy
             boost = outside_now and energy > 25
         elif target is not None and self.retreating and (target["vis"] or target["hot"] or target["d"] < 80):
             mode = "retreat"
-            cov = self.find_cover(obs, enemies, (fx, fy, fr), t_start)
+            cov = self.nav_retreat(obs, enemies, (fx, fy, fr), t_start) if N is not None else None
+            if cov is None:
+                cov = self.find_cover(obs, enemies, (fx, fy, fr), t_start)
             if cov is not None:
                 gx, gy = cov
             else:
@@ -622,7 +1110,10 @@ class Bot:
         elif target is not None and not target["engage"] and (target["vis"] or target.get("far_hot") or (hiding and target["hot"])) and (target["d"] < (220.0 if (hiding or (not self.ffa and (PICK_FIGHTS or (HEAL_FIRST and hpf < HEAL_HP)))) else AVOID_RANGE) or target.get("far_hot") or (hiding and target["hot"])):
             # someone else's fight or a bot not looking at us: get out of its sight, quietly
             mode = "avoid"
-            cov = self.find_cover(obs, [e for e in enemies if e["vis"]] or [target], (fx, fy, fr), t_start)
+            av_th = [e for e in enemies if e["vis"]] or [target]
+            cov = self.nav_retreat(obs, av_th, (fx, fy, fr), t_start) if N is not None else None
+            if cov is None:
+                cov = self.find_cover(obs, av_th, (fx, fy, fr), t_start)
             if cov is not None:
                 gx, gy = cov
             else:
@@ -769,6 +1260,24 @@ class Bot:
                 else:
                     mode = "hold"
 
+        if mode == "hold" and N is not None:
+            if HUNT_LONE and self.ffa and alive > 6 and hpf > HUNT_HP:
+                goal = self.hunt_goal(obs, me, (fx, fy, fr), t)
+                mode = "hunt"
+                if goal is not None and hyp(goal[0] - x, goal[1] - y) > 4:
+                    gx, gy = goal
+                    move_mag = 1.0
+                else:
+                    move_yaw, move_mag = 0.0, 0.0
+            elif self.home is not None:
+                hx_, hy_, _, _ = self.home
+                dh = hyp(hx_ - x, hy_ - y)
+                if dh > 3.0:
+                    gx, gy = hx_, hy_
+                    move_mag = 1.0 if (dh > 14.0 or (not self.ffa)) else 0.38
+                else:
+                    move_yaw, move_mag = 0.0, 0.0
+
         if gx is not None:
             dx, dy = gx - x, gy - y
             dd = hyp(dx, dy)
@@ -776,14 +1285,20 @@ class Bot:
                 move_mag = 0.0
                 move_yaw = 0.0
             else:
-                move_yaw = math.atan2(dy, dx)
+                wp = None
+                if N is not None and mode in ("zone", "loot", "drop", "hold", "hunt"):
+                    if dd > 16.0 or not self.path_clear(x, y, z, gx, gy):
+                        exp_w = 0.3 if outside_now else (1.8 if mode in ("hold", "zone") else 1.2)
+                        wp = self.nav_step(obs, gx, gy, enemies, exp_w, t_start)
+                tx_, ty_ = wp if wp is not None else (gx, gy)
+                move_yaw = math.atan2(ty_ - y, tx_ - x)
                 if mode in ("drop",) and dd < 4:
                     move_mag = 0.3
                 elif mode == "loot" and dd < 6:
                     move_mag = 0.6
         if gx is not None and mode == "avoid" and move_mag < 1.0:
             pass  # keep the quiet walk speed set above
-        if mode == "hold":
+        if mode == "hold" and N is None:
             # hold a quiet spot between us and the safe-circle center, ~half the radius out:
             # away from the crowded middle, but never near the edge
             dx, dy = x - fx, y - fy
@@ -1026,6 +1541,8 @@ class Bot:
                     self.scan_yaw = me["aim"][0]
                 self.scan_yaw = wrap(self.scan_yaw + 0.45)
                 look = self.scan_yaw
+            if look is None and NAV_MODEL and self.home is not None and mode == "hold" and hyp(self.home[0] - x, self.home[1] - y) < 8.0:
+                look = self.home[3]
             if look is None:
                 if act["move"] != [0.0, 0.0] and mode != "retreat":
                     look = math.atan2(act["move"][1], act["move"][0])
@@ -1379,6 +1896,87 @@ class Bot:
                 act["drop"] = worst_i
                 act["fire"][worst_i] = False
 
+    def _follow_waypoints(self, x, y, z, path):
+        """Prune reached waypoints and return the farthest line-of-sight lookahead point."""
+        while len(path) > 1 and hyp(path[0][0] - x, path[0][1] - y) < 7.5:
+            path.pop(0)
+        best = path[0]
+        for wp in path[1:5]:
+            if self.path_clear(x, y, z, wp[0], wp[1]):
+                best = wp
+            else:
+                break
+        return best
+
+    def nav_step(self, obs, gx, gy, enemies, exp_w, t_start):
+        """Cached exposure-weighted A* steering waypoint toward (gx, gy)."""
+        N = self.nav
+        if N is None:
+            return None
+        me = obs["self"]
+        t = obs["t"]
+        x, y, z = me["pos"]
+        need_replan = (self.nav_path is None or not self.nav_path or self.nav_goal is None
+                       or t - self.nav_t > 0.75
+                       or hyp(gx - self.nav_goal[0], gy - self.nav_goal[1]) > N.step * 1.8)
+        if not need_replan and hyp(self.nav_path[0][0] - x, self.nav_path[0][1] - y) > N.step * 3.0:
+            need_replan = True
+        if need_replan:
+            th = []
+            for e in enemies:
+                if e["d"] < 180:
+                    p = e["m"]["pos"]
+                    th.append((p[0], p[1]))
+            if len(th) < 4:
+                for tr in self.tracks.values():
+                    if t - tr["t"] < 8.0 and hyp(tr["pos"][0] - x, tr["pos"][1] - y) < 160:
+                        th.append((tr["pos"][0], tr["pos"][1]))
+                        if len(th) >= 4:
+                            break
+            path = N.find_path(x, y, gx, gy, th[:4], exp_w=exp_w, threat_w=3.2, max_pops=650, t_deadline=t_start + 0.007)
+            self.nav_path = path
+            self.nav_goal = (gx, gy)
+            self.nav_t = t
+        if not self.nav_path:
+            return None
+        return self._follow_waypoints(x, y, z, self.nav_path)
+
+    def nav_retreat(self, obs, enemies, safe, t_start):
+        """Cached multi-corner Dijkstra retreat waypoint around buildings."""
+        N = self.nav
+        M = self.map
+        if N is None or M is None or not enemies:
+            return None
+        me = obs["self"]
+        t = obs["t"]
+        x, y, z = me["pos"]
+        threats = [e for e in enemies if e["d"] < 220 and (e["vis"] or e["hot"])]
+        if not threats:
+            threats = [min(enemies, key=lambda e: e["d"])]
+        threats = sorted(threats, key=lambda e: e["d"])[:3]
+        th_full = [(e["m"]["pos"][0], e["m"]["pos"][1], e["m"]["pos"][2] + 8.0 * e["sz"]) for e in threats]
+
+        # Reuse cached retreat destination if still hidden and reachable
+        if self.ret_path and self.ret_dest is not None and t - self.ret_t < 0.9:
+            rx, ry = self.ret_dest
+            rz = M.surface(rx, ry, z + 2)
+            if not any(M.los(tx_, ty_, tz_, rx, ry, rz + 6.0, step=2.5) for (tx_, ty_, tz_) in th_full):
+                if hyp(rx - x, ry - y) < 3.0:
+                    return (x, y) if not any(M.los(tx_, ty_, tz_, x, y, z + 6.0, step=2.5) for (tx_, ty_, tz_) in th_full) else (rx, ry)
+                return self._follow_waypoints(x, y, z, self.ret_path)
+
+        res = N.find_retreat(x, y, z, th_full, safe, max_pops=300, t_deadline=t_start + 0.014)
+        if res is None:
+            self.ret_path = None
+            return None
+        path, dest, _ = res
+        self.ret_path = path
+        self.ret_dest = dest
+        self.ret_t = t
+        if not path:
+            return dest
+        return self._follow_waypoints(x, y, z, self.ret_path)
+
     def near_wall(self, px, py, pz):
         M = self.map
         if M is None:
@@ -1486,6 +2084,12 @@ class Bot:
             exp = cur_exp if r == 0 else exp_others(px, py, pz)
             nw = self.near_wall(px, py, pz)
             s = -exp * 16.0 + (4.0 if nw else 0.0) - abs(dt - pref) * 0.08 - r * 0.10
+            if NAV_MODEL and self.nav is not None:
+                s -= self.nav.exp_at(px, py) * 5.0
+                if self.home is not None:
+                    dh_ = hyp(px - self.home[0], py - self.home[1])
+                    if dh_ < 55.0:
+                        s += (55.0 - dh_) * 0.03
             if others:
                 mdo = min(hyp(px - ox, py - oy) for (_, ox, oy, _) in others)
                 s += min(120.0, mdo) * 0.04
