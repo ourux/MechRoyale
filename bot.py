@@ -162,8 +162,8 @@ UPGRADE_PRIORITY = [
 # practice duels reward killing faster; switched off once a free-for-all is detected
 UPGRADE_PRIORITY_PRACTICE = [
     "gun_damage", "gun_mag", "laser_damage", "gun_rate", "laser_charge", "armor", "lightning_efficiency",
-    "nanites", "plating", "gun_velocity", "gyros", "capacitor", "reactor", "sensors",
-    "servos", "jets", "lightning_range", "lightning_chain", "laser_pierce", "mortar_reload",
+    "nanites", "plating", "gun_velocity", "gyros", "servos", "capacitor", "reactor", "sensors",
+    "jets", "lightning_range", "lightning_chain", "laser_pierce", "mortar_reload",
     "mortar_splash", "mortar_velocity",
 ]
 OFFENSE_IN_PRACTICE = 1.0
@@ -223,10 +223,12 @@ NO_NPC_LASER = 0.0   # never charge the laser on NPC drones
 FINISH_FIRST = 1.0   # don't take the outnumbered retreat while a visible target is under 260 HP (and we are > 25%)
 TOPOFF = 1.0         # reload a partial mag when no enemy is known
 RETREAT_DUMP = 1.0   # release a laser charge right away when retreating
+DODGE_MOM = 1.0      # dodge side picked from current velocity (don't brake into the bullet); nearer bullets weigh more
+UPG_CTX = 1.0        # take plating first when below 55% HP
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 43        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 44        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -441,6 +443,8 @@ class Bot:
             for i, cid in enumerate(ids):
                 pri = UPGRADE_PRIORITY_PRACTICE if (OFFENSE_IN_PRACTICE and not self.ffa) else UPGRADE_PRIORITY
                 r = pri.index(cid) if cid in pri else 500
+                if UPG_CTX and cid == "plating" and me["hp"] / max(1.0, me.get("max_hp", 1400)) < 0.55:
+                    r = -1
                 if r < best:
                     best, bi = r, i
             act["pick"] = bi
@@ -781,8 +785,9 @@ class Bot:
         # ---- bullet / laser-charge dodge
         if DODGE and mode != "unstuck":
             st_ = me["stats"]
-            cz_ = z + st_.get("height", 9.0) * 0.56
-            reach_ = st_.get("radius", 3.0) + 1.1
+            my_sz = 1.0 + self.cfg.get("cubes", {}).get("size_per_cube", 0.05) * me.get("cubes", 0)
+            cz_ = z + st_.get("height", 9.0) * my_sz * 0.56
+            reach_ = st_.get("radius", 2.5) * my_sz + 1.1
             ddx = ddy = 0.0
             laser_ = False
             for pr in obs["projectiles"]:
@@ -796,15 +801,27 @@ class Bot:
                 if tc <= 0 or tc > 0.7:
                     continue
                 mxx, myy = pp[0] + pv[0] * tc - x, pp[1] + pv[1] * tc - y
-                if hyp(mxx, myy) < reach_ and abs(pp[2] + pv[2] * tc - cz_) < st_.get("height", 9.0) * 0.6:
+                if hyp(mxx, myy) < reach_ and abs(pp[2] + pv[2] * tc - cz_) < st_.get("height", 9.0) * my_sz * 0.6:
                     vh = hyp(pv[0], pv[1])
                     if vh < 1:
                         continue
                     px_, py_ = -pv[1] / vh, pv[0] / vh
-                    if px_ * mxx + py_ * myy > 0:
-                        px_, py_ = -px_, -py_
-                    ddx += px_
-                    ddy += py_
+                    if DODGE_MOM:
+                        m_p = px_ * mxx + py_ * myy
+                        v_p = me["vel"][0] * px_ + me["vel"][1] * py_
+                        acc = st_.get("ground_accel", 58.5) if me.get("grounded", True) else st_.get("air_accel", 12.0)
+                        vmax = st_.get("walk_speed", 11.7) * 1.6
+                        d_pos = max(-vmax * tc, min(vmax * tc, v_p * tc + 0.5 * acc * tc * tc))
+                        d_neg = max(-vmax * tc, min(vmax * tc, v_p * tc - 0.5 * acc * tc * tc))
+                        if abs(d_neg - m_p) > abs(d_pos - m_p):
+                            px_, py_ = -px_, -py_
+                        w_ = 1.0 / max(0.15, tc)
+                    else:
+                        if px_ * mxx + py_ * myy > 0:
+                            px_, py_ = -px_, -py_
+                        w_ = 1.0
+                    ddx += px_ * w_
+                    ddy += py_ * w_
             for m_ in obs["mechs"]:
                 if m_.get("kind") != "mech" or not m_.get("charging"):
                     continue
@@ -955,6 +972,8 @@ class Bot:
             # keep the laser from auto-firing into nothing for too long: release when charged
             if laser is not None and (laser.get("charge", 0) or 0) > 0:
                 fire[laser_i] = True if (laser.get("charge", 0) or 0) < laser["stats"].get("charge", 0.75) + 1.5 else False
+                if RETREAT_DUMP and mode in ("retreat", "zone"):
+                    fire[laser_i] = False
 
         pmin, pmax = self.cfg["mech"].get("min_pitch", -0.7), self.cfg["mech"].get("max_pitch", 1.3)
         aim[1] = max(pmin, min(pmax, aim[1]))
