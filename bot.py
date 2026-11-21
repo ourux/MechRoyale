@@ -178,6 +178,7 @@ FLIP_P = 0.6
 AIM_TOL = 3.0
 FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
+RELOAD_COVER = 0.0  # 1: break line of sight while the gun reloads (and the laser is not ready)
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -550,6 +551,13 @@ class Bot:
                 vy_ += 0.8 * zy / zl
             move_yaw = math.atan2(vy_, vx_)
             boost = energy > FIGHT_BOOST_E and (t - self.last_dmg_t < 1.5)
+            if RELOAD_COVER and gun is not None and gun.get("reload", 0) > 0.5 and target["vis"] \
+                    and (laser is None or laser.get("cooldown", 0) > 0.5) and (light is None or d > 45):
+                cov = self.find_cover(obs, [e for e in enemies if e["vis"] or e["hot"]] or [target], (fx, fy, fr), t_start)
+                if cov is not None:
+                    mode = "duck"
+                    gx, gy = cov
+                    boost = energy > 20
         else:
             mode = "loot"
             goal = self.pick_loot(obs, me, (fx, fy, fr), enemies, hpf)
