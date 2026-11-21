@@ -205,7 +205,7 @@ FLEE_FFA = 0.0       # once a free-for-all is detected: run from anyone approach
 HIDE = 0.0           # hide until the end game: fight back only at close range, avoid everyone else
 HIDE_UNTIL_T = 380.0
 HIDE_UNTIL_ALIVE = 3
-SEED_SALT = 12        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 13        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
