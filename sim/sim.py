@@ -101,6 +101,34 @@ class Mech:
         return None
 
 
+class Thing:
+    """NPC drone or loot crate: enough of the Mech interface for the weapon code."""
+    def __init__(self, tid, kind, x, y, z):
+        self.id, self.kind = tid, kind
+        self.x, self.y, self.z = x, y, z
+        self.home = (x, y)
+        self.vx = self.vy = self.vz = 0.0
+        self.alive = True
+        self.aim = [0.0, 0.0]
+        self.events = []
+        self.kills = 0
+        self.last_combat = -99.0
+        self.target = None
+        self.cool = 0.0
+        self.wander = (x, y)
+        if kind == "npc":
+            n = CFG["npc"]
+            self.hp = self.max = n["hp"]
+            self.stats = {"radius": n["radius"], "height": n["height"], "front_arc_deg": 360, "rear_mult": 1, "armor": 0}
+        else:
+            c = CFG["crates"]
+            self.hp = self.max = c["hp"]
+            self.stats = {"radius": c["radius"], "height": c["height"], "front_arc_deg": 360, "rear_mult": 1, "armor": 0}
+
+    def has(self, kind):
+        return None
+
+
 class Match:
     def __init__(self, bot_specs, seed):
         self.rng = random.Random(seed)
@@ -131,6 +159,8 @@ class Match:
             b = mod.Bot(h)
             self.bots.append(b)
         self._spawn_loot()
+        self.things = []
+        self._spawn_things()
 
     # ---- setup
     def _walkable(self, x, y):
@@ -206,6 +236,82 @@ class Match:
             self.add_pickup(self.rng.choice(kinds), x, y, self.M.gz(x, y))
             n += 1
 
+    def _spawn_things(self):
+        for kind, n0, base in (("npc", CFG["npc"]["count"], 100), ("crate", CFG["crates"]["count"], 1000)):
+            n = 0
+            while n < n0:
+                x = self.rng.uniform(self.M.bx0 + 40, self.M.bx1 - 40)
+                y = self.rng.uniform(self.M.by0 + 40, self.M.by1 - 40)
+                if not self._walkable(x, y):
+                    continue
+                self.things.append(Thing(base + n, kind, x, y, self.M.gz(x, y)))
+                n += 1
+
+    def targets(self):
+        return self.mechs + [t for t in self.things if t.alive]
+
+    def thing_kill(self, th, src):
+        th.alive = False
+        if th.kind == "npc":
+            ncub = CFG["npc"]["cubes"]
+        else:
+            ncub = CFG["crates"]["cubes"]
+            self.sounds.append((self.t, "crate", th.x, th.y, -1))
+            if self.rng.random() < CFG["loot"]["crate_weapon_chance"]:
+                self.add_pickup(self.rng.choice(["mortar", "laser", "lightning"]), th.x, th.y, th.z)
+        for _ in range(ncub):
+            self.cubes[self.next_cube] = {"id": self.next_cube, "pos": [th.x + self.rng.uniform(-2, 2), th.y + self.rng.uniform(-2, 2), th.z]}
+            self.next_cube += 1
+
+    def npc_step(self, n):
+        nc = CFG["npc"]
+        dh = hyp(n.x - n.home[0], n.y - n.home[1])
+        tgt = n.target
+        if tgt is not None and (not tgt.alive or hyp(tgt.x - n.x, tgt.y - n.y) > nc["deaggro_range"] or dh > nc["chase_leash"]):
+            tgt = n.target = None
+        if tgt is None and dh <= nc["leash"]:
+            best = None
+            for m in self.mechs:
+                if not m.alive:
+                    continue
+                d = hyp(m.x - n.x, m.y - n.y)
+                if d < nc["aggro_range"] and (best is None or d < best[0]) and self.M.los(n.x, n.y, n.z + 2.5, m.x, m.y, m.z + 4.5, 2.0):
+                    best = (d, m)
+            if best:
+                tgt = n.target = best[1]
+        if tgt is not None:
+            d = hyp(tgt.x - n.x, tgt.y - n.y)
+            gx, gy = (tgt.x, tgt.y) if d > 20 else (n.x, n.y)
+            n.cool -= DT
+            if n.cool <= 0 and self.M.los(n.x, n.y, n.z + 2.5, tgt.x, tgt.y, tgt.z + 4.5, 2.0):
+                n.cool = nc["cooldown"]
+                tz = tgt.z + 4.5
+                tt = d / nc["projectile_speed"]
+                ax, ay = tgt.x + tgt.vx * tt, tgt.y + tgt.vy * tt
+                yaw = math.atan2(ay - n.y, ax - n.x) + self.rng.gauss(0, math.radians(nc["spread_deg"]))
+                pitch = math.atan2(tz - (n.z + 2.5), max(1.0, d))
+                v = nc["projectile_speed"]
+                self.bullets.append([n.x + math.cos(yaw) * 2.2, n.y + math.sin(yaw) * 2.2, n.z + 2.5,
+                                     math.cos(pitch) * math.cos(yaw) * v, math.cos(pitch) * math.sin(yaw) * v,
+                                     math.sin(pitch) * v, 200.0, n, nc["damage"], "npc"])
+                self.sounds.append((self.t, "npc_gun", n.x, n.y, -1))
+        else:
+            if hyp(n.wander[0] - n.x, n.wander[1] - n.y) < 2 or self.rng.random() < 0.005:
+                a = self.rng.uniform(0, 2 * math.pi)
+                r = self.rng.uniform(0, nc["leash"])
+                n.wander = (n.home[0] + math.cos(a) * r, n.home[1] + math.sin(a) * r)
+            gx, gy = n.wander
+        dx, dy = gx - n.x, gy - n.y
+        dl = hyp(dx, dy)
+        if dl > 0.5:
+            sp = nc["speed"]
+            nx, ny = n.x + dx / dl * sp * DT, n.y + dy / dl * sp * DT
+            if self._walkable(nx, ny) and abs(self.M.gz(nx, ny) - n.z) < 1.5:
+                n.x, n.y, n.z = nx, ny, self.M.gz(nx, ny)
+                n.vx, n.vy = dx / dl * sp, dy / dl * sp
+                return
+        n.vx = n.vy = 0.0
+
     def add_pickup(self, kind, x, y, z):
         self.pickups[self.next_id] = {"id": self.next_id, "kind": kind, "pos": [x, y, z]}
         self.next_id += 1
@@ -253,6 +359,12 @@ class Match:
                 mechs.append({"id": o.id, "kind": "mech", "pos": [o.x, o.y, o.z], "vel": [o.vx, o.vy, o.vz],
                               "aim": list(o.aim), "hp": o.hp, "max_hp": o.max_hp(), "cubes": o.cubes,
                               "weapons": ws, "charging": charging})
+        for n in self.things:
+            if n.alive and n.kind == "npc" and hyp(n.x - m.x, n.y - m.y) < 200 and self.see_point(m, n.x, n.y, n.z + 1):
+                mechs.append({"id": n.id, "kind": "npc", "pos": [n.x, n.y, n.z], "vel": [n.vx, n.vy, 0.0],
+                              "aim": [0.0, 0.0], "hp": n.hp, "max_hp": n.max})
+        crates = [{"id": c.id, "pos": [c.x, c.y, c.z], "hp": c.hp} for c in self.things
+                  if c.alive and c.kind == "crate" and hyp(c.x - m.x, c.y - m.y) < 200 and self.see_point(m, c.x, c.y, c.z)]
         pickups = [p for p in self.pickups.values() if hyp(p["pos"][0] - m.x, p["pos"][1] - m.y) < 200 and self.see_point(m, *p["pos"])]
         cubes = [c for c in self.cubes.values() if hyp(c["pos"][0] - m.x, c["pos"][1] - m.y) < 200 and self.see_point(m, *c["pos"])]
         sounds = []
@@ -275,7 +387,7 @@ class Match:
                          "grounded": m.grounded, "cubes": m.cubes, "upgrades": list(m.upgrades),
                          "in_zone": hyp(m.x - cx, m.y - cy) <= cr,
                          "weapons": [self.weapon_obs(m, w) for w in m.weapons], "stats": s},
-                "mechs": mechs, "projectiles": [], "crates": [], "cubes": cubes, "pickups": pickups,
+                "mechs": mechs, "projectiles": [], "crates": crates, "cubes": cubes, "pickups": pickups,
                 "sounds": sounds, "beams": [], "events": ev, "drops": [], "zone": self.zone_obs(), "offer": m.offer}
 
     # ---- actions
@@ -367,6 +479,16 @@ class Match:
     def damage(self, tgt, src, amount, weapon, from_x, from_y):
         if not tgt.alive:
             return
+        if isinstance(tgt, Thing):
+            if src is None or isinstance(src, Thing):
+                return
+            tgt.hp -= amount
+            src.events.append({"type": "hit", "target": tgt.id, "amount": round(amount, 2), "weapon": weapon})
+            if tgt.kind == "npc":
+                tgt.target = src
+            if tgt.hp <= 0:
+                self.thing_kill(tgt, src)
+            return
         rear = False
         if weapon != "zone":
             b = math.atan2(from_y - tgt.y, from_x - tgt.x)
@@ -400,7 +522,7 @@ class Match:
         for _ in range(m.cubes + CFG["cubes"]["death_drop_extra"]):
             self.cubes[self.next_cube] = {"id": self.next_cube, "pos": [m.x + self.rng.uniform(-3, 3), m.y + self.rng.uniform(-3, 3), m.z]}
             self.next_cube += 1
-        if src is not None:
+        if src is not None and not isinstance(src, Thing):
             src.kills += 1
             src.events.append({"type": "kill", "target": m.id})
 
@@ -458,7 +580,7 @@ class Match:
         self.sounds.append((self.t, "laser", m.x, m.y, m.id))
         hd = hyp(dx, dy)
         best = None
-        for o in self.mechs:
+        for o in self.targets():
             if o is m or not o.alive:
                 continue
             ox, oy = o.x - mx, o.y - my
@@ -485,7 +607,7 @@ class Match:
         cone = math.radians(st["cone_deg"])
         hit = []
         cand = None
-        for o in self.mechs:
+        for o in self.targets():
             if o is m or not o.alive:
                 continue
             d = hyp(o.x - m.x, o.y - m.y)
@@ -493,7 +615,7 @@ class Match:
                 continue
             if abs(wrap(math.atan2(o.y - m.y, o.x - m.x) - m.aim[0])) > cone:
                 continue
-            if not self.M.los(m.x, m.y, m.z + 7, o.x, o.y, o.z + 4.5, 1.5):
+            if not self.M.los(m.x, m.y, m.z + 7, o.x, o.y, o.z + o.stats["height"] / 2, 1.5):
                 continue
             if cand is None or d < cand[0]:
                 cand = (d, o)
@@ -508,7 +630,7 @@ class Match:
                 li = cur.has("laser")
                 cur.weapons[li]["charge"] = 0.0
             nxt = None
-            for o in self.mechs:
+            for o in self.targets():
                 if o is m or not o.alive or o in hit:
                     continue
                 d = hyp(o.x - cur.x, o.y - cur.y)
@@ -522,12 +644,13 @@ class Match:
     def step_bullets(self):
         keep = []
         for b in self.bullets:
-            x, y, z, vx, vy, vz, rng, src, dmg = b
+            x, y, z, vx, vy, vz, rng, src, dmg = b[:9]
+            wname = b[9] if len(b) > 9 else "gun"
             nx, ny, nz = x + vx * DT, y + vy * DT, z + vz * DT
             seg = math.sqrt((vx * DT) ** 2 + (vy * DT) ** 2 + (vz * DT) ** 2)
             hitm = None
             best = 1e9
-            for o in self.mechs:
+            for o in (self.mechs if wname == "npc" else self.targets()):
                 if o is src or not o.alive:
                     continue
                 if abs(o.x - (x + nx) / 2) > seg + 4 or abs(o.y - (y + ny) / 2) > seg + 4:
@@ -543,14 +666,14 @@ class Match:
             if hitm is not None:
                 hx, hy, hz = x + (nx - x) * best, y + (ny - y) * best, z + (nz - z) * best
                 if self.M.los(x, y, z, hx, hy, hz, 1.5):
-                    self.damage(hitm, src, dmg, "gun", x, y)
+                    self.damage(hitm, src, dmg, wname, x, y)
                     continue
             if not self.M.los(x, y, z, nx, ny, nz, 1.5):
                 continue
             rng -= seg
             if rng <= 0:
                 continue
-            keep.append([nx, ny, nz, vx, vy, vz, rng, src, dmg])
+            keep.append([nx, ny, nz, vx, vy, vz, rng, src, dmg, wname])
         self.bullets = keep
 
     # ---- physics
@@ -708,6 +831,9 @@ class Match:
             for m in self.mechs:
                 if m.alive:
                     self.fire(m)
+            for th in self.things:
+                if th.alive and th.kind == "npc":
+                    self.npc_step(th)
             self.step_bullets()
             for m in self.mechs:
                 if m.alive:
