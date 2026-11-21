@@ -215,10 +215,11 @@ DODGE = 1.0          # dodge incoming bullets (closest approach < radius within 
 DODGE_BOOST = 25.0   # boost while dodging if energy above this (0: off)
 LIGHT_CONE = 0.4     # lightning fires when aim is within cone_deg * this of the target (cone_deg is the full width, so 0.5 = edge)
 SNAP_FRAC = 0.8      # LASER_SNAP: snap aim to the hitscan point from this charge fraction
+MATCHUP = 40.0       # target-score bonus per edge: back turned to us, laser vs mortar carrier, lightning vs laser carrier < 45 m
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 34        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 35        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -551,7 +552,20 @@ class Bot:
                     s -= 100
                 if FINISH_BONUS and not self.ffa and e["vis"] and m.get("hp", 1400) < 0.35 * m.get("max_hp", 1400):
                     s -= 80
+                if MATCHUP and e["vis"]:
+                    mp = m["pos"]
+                    to_me_ = math.atan2(y - mp[1], x - mp[0])
+                    arc_ = math.radians(stats.get("front_arc_deg", 120)) / 2
+                    if abs(wrap(m.get("aim", [to_me_])[0] - to_me_)) > arc_:
+                        s -= MATCHUP  # its back is to us: rear damage multiplier
+                    tw = [w_ if isinstance(w_, str) else (w_ or {}).get("kind") for w_ in m.get("weapons", [])]
+                    if my_laser and "mortar" in tw:
+                        s -= MATCHUP  # laser cook-off
+                    if my_light and "laser" in tw and e["d"] < 45:
+                        s -= MATCHUP  # lightning shorts its laser
                 return s
+            my_kinds = [w_["kind"] for w_ in weapons if w_]
+            my_laser, my_light = "laser" in my_kinds, "lightning" in my_kinds
             target = min(enemies, key=score)
 
         # ---- fight or flight
