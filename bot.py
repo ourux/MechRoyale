@@ -195,6 +195,9 @@ DROP_RUSH = 0.0      # 1: supply drops (3 cubes + full HP/energy) come before ot
 LOOT_SCAN = 0.0      # 1: spin the torso while unarmed (no second weapon) early on, to spot pickups
 MRM = 1.0            # 1: Minimum Risk Movement while holding (Robocode melee): keep moving to the safest nearby spot
 MRM_PERIOD = 1.0
+OUTNUM_HP = 0.5      # retreat when outnumbered below this HP fraction
+RETREAT_LASER = 1.0  # 1: may charge the laser while retreating (halves speed)
+COVER_THREATS = 2    # how many nearby threats cover must hide from
 HUNT_LONE = 1.0      # V: hunt mechs that are alone, keep moving until one is found; never turn away from a shooter
 HUNT_HP = 0.60
 PICK_FIGHTS = 0.0    # practice (V's rule): attack a hunter only if it is alone and we are above PICK_HP; else heal out of sight
@@ -545,7 +548,7 @@ class Bot:
             th = target["m"].get("hp", 1400)
             outnumbered = sum(1 for e in enemies if e["d"] < 140 and (e["vis"] or e["hot"])) >= 2
             if not self.retreating:
-                if (hpf < RETREAT_HP and th > hp * 0.8) or (hpf < 0.5 and outnumbered) or (hpf < 0.2 and th > 200):
+                if (hpf < RETREAT_HP and th > hp * 0.8) or (hpf < OUTNUM_HP and outnumbered) or (hpf < 0.2 and th > 200):
                     self.retreating = True
             else:
                 if hpf > 0.8 or (th < hp * 0.35 and not outnumbered) or (t - self.last_dmg_t > 12 and hpf > 0.6):
@@ -790,7 +793,7 @@ class Bot:
                         fire[laser_i] = True
                 elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode != "retreat":
                     fire[laser_i] = True
-                elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode == "retreat" and ld > 60:
+                elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode == "retreat" and ld > 60 and RETREAT_LASER:
                     fire[laser_i] = True
                 if kind == "mech" and laser_i is not None and gun is None:
                     aim = [ly, lp]
@@ -1190,7 +1193,7 @@ class Bot:
         threats = [e for e in enemies if e["d"] < 220 and (e["vis"] or e["hot"])]
         if not threats:
             threats = [min(enemies, key=lambda e: e["d"])]
-        threats = sorted(threats, key=lambda e: e["d"])[:2]
+        threats = sorted(threats, key=lambda e: e["d"])[:int(COVER_THREATS)]
 
         def hidden(px, py, pz):
             for e in threats:
