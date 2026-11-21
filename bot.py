@@ -171,11 +171,11 @@ RETREAT_HP = 0.45
 AVOID_RANGE = 150.0
 FAR_HOT = 1e9        # a mech hitting us from beyond this range is avoided, not fought, unless we are clearly ahead
 AVOID_SHOOT = 0.0
-PREF_RANGE = 70.0
+PREF_RANGE = 110.0
 STRAFE_MIN = 0.45
 STRAFE_MAX = 1.25
 FLIP_P = 0.6
-AIM_TOL = 2.0
+AIM_TOL = 3.0
 FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
@@ -183,7 +183,7 @@ NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-v3"
+    name = "vmech-v4"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
