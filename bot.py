@@ -218,12 +218,12 @@ SNAP_FRAC = 0.8      # LASER_SNAP: snap aim to the hitscan point from this charg
 MATCHUP = 0.0       # target-score bonus per edge: back turned to us, laser vs mortar carrier, lightning vs laser carrier < 45 m
 STUCK_FIX = 1.0      # no stuck-jet from low net displacement while strafing in a fight (only when steering is blocked)
 HIGH_AIM = 1.0       # if the waist is behind cover, aim at the upper body when that has line of sight
-SOFT_WAIT = 1.0      # don't shoot NPCs/crates within 3 s of taking damage (turn to the shooter instead)
-NO_NPC_LASER = 1.0   # never charge the laser on NPC drones
+SOFT_WAIT = 0.0      # don't shoot NPCs/crates within 3 s of taking damage (turn to the shooter instead)
+NO_NPC_LASER = 0.0   # never charge the laser on NPC drones
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 39        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 40        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
