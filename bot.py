@@ -173,8 +173,8 @@ FAR_HOT = 1e9        # a mech hitting us from beyond this range is avoided, not 
 AVOID_SHOOT = 0.0
 PREF_RANGE = 110.0
 PREF_RANGE_FFA = 110.0  # range once a death we didn't cause shows this is a free-for-all
-PRACTICE_ENGAGE = 1.0   # 1: until FFA is detected, fight every visible mech within AIMED_RANGE (all are hunters)
-WEAPON_HUNT = 1.0       # 1: with no second weapon, value weapon pickups much higher and look farther
+PRACTICE_ENGAGE = 0.0   # 1: until FFA is detected, fight every visible mech within AIMED_RANGE (all are hunters)
+WEAPON_HUNT = 0.0       # 1: with no second weapon, value weapon pickups much higher and look farther
 STRAFE_MIN = 0.45
 STRAFE_MAX = 1.25
 FLIP_P = 0.6
@@ -182,18 +182,19 @@ AIM_TOL = 3.0
 FIGHT_BOOST_E = 45.0
 STRAFE_W = 0.95
 RELOAD_COVER = 0.0  # 1: break line of sight while the gun reloads (and the laser is not ready)
+SEED_SALT = 1        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
 
 class Bot:
-    name = "vmech-v5"
+    name = "vmech-v4s1"
 
     def __init__(self, hello):
         t0 = time.perf_counter()
         self.cfg = hello["config"]
         self.slot = hello.get("slot", 0)
-        random.seed(hello.get("seed", 0))
+        random.seed(hello.get("seed", 0) * 1000003 + SEED_SALT)
         d = hello.get("map", {}).get("dir", "/arena")
         self.map = None
         try:
