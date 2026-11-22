@@ -244,7 +244,7 @@ WALL_CLAMP_AIM = 1.0       # clamp gun lead out of solid walls & follow ground s
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 77        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 78        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -363,6 +363,8 @@ class Bot:
                 bk = bm.get("kind")
                 if bk and bk not in tr.get("weapons", []):
                     tr["weapons"] = list(tr.get("weapons", [])) + [bk]
+                mp_ = obs["self"]["pos"]
+                self.look = (math.atan2(p0[1] - mp_[1], p0[0] - mp_[0]), t + 1.5)
         for ev in obs["events"]:
             ty = ev.get("type")
             if ty == "damaged":
@@ -797,10 +799,11 @@ class Bot:
                         if dp_ < w_rad and (best_cf is None or dp_ < best_cf[0]):
                             best_cf = (dp_, p_["pos"][0], p_["pos"][1], 1.25)
                 if best_cf is None and (hpf < 0.90 or me.get("cubes", 0) < 15):
+                    c_rad = 30.0 if hpf < 0.75 else 24.0
                     for c_ in obs["cubes"]:
                         if abs(c_["pos"][2] - z) < 4.5 and self.in_safe(c_["pos"][0], c_["pos"][1], (fx, fy, fr)):
                             dc_ = hyp(c_["pos"][0] - x, c_["pos"][1] - y)
-                            if dc_ < 24.0 and (best_cf is None or dc_ < best_cf[0]):
+                            if dc_ < c_rad and (best_cf is None or dc_ < best_cf[0]):
                                 best_cf = (dc_, c_["pos"][0], c_["pos"][1], 1.05)
                 if best_cf is not None:
                     dc_, cx_, cy_, pull_ = best_cf
@@ -1061,6 +1064,8 @@ class Bot:
                         ddy += py_ * w_
                         if tc < urgent_tc:
                             urgent_tc = tc
+                        if pr["kind"] == "gun":
+                            self.look = (math.atan2(-pv[1], -pv[0]), t + 1.5)
                 else:
                     v2 = pv[0] * pv[0] + pv[1] * pv[1] + pv[2] * pv[2]
                     if v2 < 1:
@@ -1220,7 +1225,7 @@ class Bot:
                     fire[laser_i] = True
                 if kind == "mech" and laser_i is not None and (gun is None or (LASER_RELOAD_AIM and (gun.get("reload", 0) > 0.1 or dist > gun["stats"]["range"] * 0.98) and (charge > 0 or laser.get("cooldown", 0) <= 0.25) and l_los)):
                     aim = [ly, lp]
-                elif LASER_SNAP and kind == "mech" and (charge >= lfull * SNAP_FRAC or lfull - charge <= 0.16 or lethal) and l_los:
+                elif LASER_SNAP and kind == "mech" and (charge >= lfull * SNAP_FRAC or lfull - charge <= 0.20 or lethal) and l_los:
                     aim = [ly, lp]
             if light is not None:
                 lst = light["stats"]
