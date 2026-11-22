@@ -239,12 +239,12 @@ FAST_LASER = 1.0           # release laser within 1 sim tick of full (lfull - 0.
 PRACTICE_TEMPO = 1.0       # practice: full walk speed in MRM, active roam+scan until 2nd weapon found, boost to laser
 ANTI_FLANK = 1.0           # push away from 1v2+ flankers (avoid 1.5x rear dmg) & kite rushing lightning bots
 LASER_RELOAD_AIM = 1.0     # aim at hitscan laser point while gun is reloading/out of range + rear_mult in LETHAL
-LASER_NO_OVERKILL = 1.0    # don't start a fresh laser charge on a 1-bullet enemy when loaded gun can finish it
+LASER_NO_OVERKILL = 0.0    # don't start a fresh laser charge on a 1-bullet enemy when loaded gun can finish it
 WALL_CLAMP_AIM = 1.0       # clamp gun lead out of solid walls & follow ground slope at lead point
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 76        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 77        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -992,8 +992,6 @@ class Bot:
             act["move"] = [round(math.cos(sy) * move_mag, 3), round(math.sin(sy) * move_mag, 3)]
         else:
             act["move"] = [0.0, 0.0]
-        if PRACTICE_TEMPO and not self.ffa and not boost and mode in ("loot", "drop", "hold") and move_mag >= 0.9 and energy > 75:
-            boost = True
         act["boost"] = bool(boost and act["move"] != [0.0, 0.0])
         act["jump"] = jump
 
@@ -1132,7 +1130,7 @@ class Bot:
         aim = None
         shoot = None  # (pos, vel, height, kind)
         hold_fire = False
-        if target is not None and (target["vis"] or target["d"] < 230) and (target["engage"] or mode == "retreat"):
+        if target is not None and (target["vis"] or (target["d"] < 230 and not (self.last_dmg_bearing and t - self.last_dmg_bearing[1] < 1.5))) and (target["engage"] or mode == "retreat"):
             m = target["m"]
             shoot = (m["pos"], m["vel"], 4.5 * target["sz"], "mech", target["vis"])
         elif target is not None and target["vis"] and (target["d"] < 150 or target.get("far_hot")):
