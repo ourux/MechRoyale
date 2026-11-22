@@ -236,9 +236,6 @@ CUBE_FIGHT = 1.0           # scoop nearby kill cubes & needed weapons during fig
 ACTIVE_HUNTER = 1.0        # practice: engage chasing/aiming active hunters at 125-145 m without aggroing idle bots
 ZONE_STRAFE = 1.0          # stay in combat strafe with stronger zone pull while still safely inside current zone
 FAST_LASER = 1.0           # release laser within 1 sim tick of full (lfull - 0.055) to cut 50%-speed dwell time
-PRACTICE_TEMPO = 1.0       # practice: full walk speed in MRM, active roam+scan until 2nd weapon found, boost to laser
-ANTI_FLANK = 1.0           # push away from 1v2+ flankers (avoid 1.5x rear dmg) & kite rushing lightning bots
-LASER_RELOAD_AIM = 1.0     # aim at hitscan laser point while gun is reloading/out of range + rear_mult in LETHAL
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
@@ -708,9 +705,6 @@ class Bot:
                 # close in to get a line, but stay careful
                 pref = min(pref, max(20.0, d - 30))
             radial = max(-1.0, min(1.0, (d - pref) / 25.0))
-            light_rush = ANTI_FLANK and light is None and "lightning" in their and d < 56.0
-            if light_rush:
-                radial = -1.5
             if t > self.side_until:
                 if random.random() < FLIP_P:
                     self.side = -self.side
@@ -763,32 +757,18 @@ class Bot:
                             vx_ += pull_ * dx_ / max(1.0, dd_)
                             vy_ += pull_ * dy_ / max(1.0, dd_)
                         break
-            # Anti-flank repulsion: keep 2nd/3rd hunters in front of our 180-deg front armor (avoid 1.5x rear dmg)
-            if ANTI_FLANK and vis_others_:
-                ay_now = me["aim"][0]
-                f_arc = math.radians(stats.get("front_arc_deg", 180)) * 0.45
-                for o_ in vis_others_[:3]:
-                    op_ = o_["m"]["pos"]
-                    od_ = max(1.0, o_["d"])
-                    ob_ = math.atan2(op_[1] - y, op_[0] - x)
-                    flank_w = 0.55 if abs(wrap(ob_ - ay_now)) > f_arc else 0.25
-                    if od_ < 130.0:
-                        vx_ -= flank_w * (op_[0] - x) / od_
-                        vy_ -= flank_w * (op_[1] - y) / od_
             # Mid-fight cube & needed-weapon scoop: grab fresh kill cubes (+4% HP heal + DMG + upgrade) without stopping fire!
-            if CUBE_FIGHT and not light_rush:
+            if CUBE_FIGHT:
                 best_cf = None
-                w_rad = 34.0 if me["weapons"][1] is None else 20.0
-                for p_ in obs["pickups"]:
-                    if self.wanted_pickup(p_["kind"], me) > 0 and abs(p_["pos"][2] - z) < 4.5 and t - self.take_fail.get(p_["id"], -99) >= 3:
-                        if not self.in_safe(p_["pos"][0], p_["pos"][1], (fx, fy, fr)):
-                            continue
-                        dp_ = hyp(p_["pos"][0] - x, p_["pos"][1] - y)
-                        if dp_ < w_rad and (best_cf is None or dp_ < best_cf[0]):
-                            best_cf = (dp_, p_["pos"][0], p_["pos"][1], 1.25)
+                if me["weapons"][1] is None:
+                    for p_ in obs["pickups"]:
+                        if self.wanted_pickup(p_["kind"], me) > 0 and abs(p_["pos"][2] - z) < 4.5 and t - self.take_fail.get(p_["id"], -99) >= 3:
+                            dp_ = hyp(p_["pos"][0] - x, p_["pos"][1] - y)
+                            if dp_ < 34.0 and (best_cf is None or dp_ < best_cf[0]):
+                                best_cf = (dp_, p_["pos"][0], p_["pos"][1], 1.25)
                 if best_cf is None and (hpf < 0.90 or me.get("cubes", 0) < 15):
                     for c_ in obs["cubes"]:
-                        if abs(c_["pos"][2] - z) < 4.5 and self.in_safe(c_["pos"][0], c_["pos"][1], (fx, fy, fr)):
+                        if abs(c_["pos"][2] - z) < 4.5:
                             dc_ = hyp(c_["pos"][0] - x, c_["pos"][1] - y)
                             if dc_ < 24.0 and (best_cf is None or dc_ < best_cf[0]):
                                 best_cf = (dc_, c_["pos"][0], c_["pos"][1], 1.05)
@@ -805,7 +785,7 @@ class Bot:
                 vx_ += zw_ * zx / zl
                 vy_ += zw_ * zy / zl
             move_yaw = math.atan2(vy_, vx_)
-            boost = (energy > FIGHT_BOOST_E and (t - self.last_dmg_t < 1.5)) or (light_rush and energy > 30)
+            boost = energy > FIGHT_BOOST_E and (t - self.last_dmg_t < 1.5)
             if COVER_FIGHT and M is not None:
                 vis_others = [e for e in enemies if e is not target and e["vis"] and e["d"] < 190]
                 fsp = self.find_fight_spot(obs, target, enemies, (fx, fy, fr), pref, t_start)
@@ -877,9 +857,6 @@ class Bot:
                 pass
             elif (goal := self.pick_loot(obs, me, (fx, fy, fr), enemies, hpf)) is not None:
                 gx, gy = goal
-                if PRACTICE_TEMPO and not self.ffa and me["weapons"][1] is None and energy > 55:
-                    if any(p_["kind"] == "laser" and hyp(p_["pos"][0] - gx, p_["pos"][1] - gy) < 2.0 for p_ in obs["pickups"]):
-                        boost = True
             elif zone_push or d_future > fr * 0.7:
                 gx, gy = fx, fy
                 mode = "zone"
@@ -923,20 +900,6 @@ class Bot:
                     move_mag = 1.0
                 else:
                     move_yaw, move_mag = 0.0, 0.0
-            elif PRACTICE_TEMPO and not self.ffa and me["weapons"][1] is None:
-                # Actively roam the safe zone at full speed until we find a laser/lightning!
-                if self.roam is None or t - self.roam_t > 12 or hyp(self.roam[0] - x, self.roam[1] - y) < 10 or hyp(self.roam[0] - fx, self.roam[1] - fy) > fr * 0.85:
-                    gx_r, gy_r = fx, fy
-                    for _ in range(16):
-                        a_r = random.uniform(0, TAU)
-                        r_r = fr * math.sqrt(random.random()) * 0.75
-                        cx_r, cy_r = fx + math.cos(a_r) * r_r, fy + math.sin(a_r) * r_r
-                        if M is None or not M.blocked(cx_r, cy_r, M.gz(cx_r, cy_r), 1.0):
-                            gx_r, gy_r = cx_r, cy_r
-                            break
-                    self.roam, self.roam_t = (gx_r, gy_r), t
-                move_yaw = math.atan2(self.roam[1] - y, self.roam[0] - x)
-                move_mag = 1.0
             elif MRM and M is not None:
                 ax_, ay_ = (hx, hy) if dl > ring * 0.8 else (x, y)
                 dest = self.mrm(obs, me, (fx, fy, fr), ax_, ay_, t)
@@ -1180,11 +1143,6 @@ class Bot:
                         dmg *= 1 + ccfg.get("damage_per_cube", 0) * min(me.get("cubes", 0), ccfg.get("stat_cap", 0))
                         if any((w_ == "mortar" or (isinstance(w_, dict) and w_.get("kind") == "mortar")) for w_ in target["m"].get("weapons", [])):
                             dmg *= 1 + lst.get("cookoff", 0.6)
-                        if LASER_RELOAD_AIM:
-                            mp_l = target["m"]["pos"]
-                            to_me_l = math.atan2(y - mp_l[1], x - mp_l[0])
-                            if abs(wrap(target["m"].get("aim", [to_me_l])[0] - to_me_l)) > math.radians(stats.get("front_arc_deg", 180)) * 0.52:
-                                dmg *= stats.get("rear_mult", 1.5)
                         lethal = dmg * 0.8 >= target["m"]["hp"]
                     if RETREAT_DUMP and mode in ("retreat", "duck") and charge >= lst.get("min_charge", 0.15):
                         fire[laser_i] = False  # dump it: get full escape speed back
@@ -1198,7 +1156,7 @@ class Bot:
                     fire[laser_i] = True
                 elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode == "retreat" and ld > 60 and RETREAT_LASER:
                     fire[laser_i] = True
-                if kind == "mech" and laser_i is not None and (gun is None or (LASER_RELOAD_AIM and (gun.get("reload", 0) > 0.1 or dist > gun["stats"]["range"] * 0.98) and (charge > 0 or laser.get("cooldown", 0) <= 0.25) and l_los)):
+                if kind == "mech" and laser_i is not None and gun is None:
                     aim = [ly, lp]
                 elif LASER_SNAP and kind == "mech" and (charge >= lfull * SNAP_FRAC or lfull - charge <= 0.16 or lethal) and l_los:
                     aim = [ly, lp]
@@ -1235,7 +1193,7 @@ class Bot:
                     tr = min(self.tracks.values(), key=lambda v: t - v["t"])
                     if t - tr["t"] < 8:
                         look = math.atan2(tr["pos"][1] - y, tr["pos"][0] - x)
-            if look is None and (LOOT_SCAN or (PRACTICE_TEMPO and not self.ffa)) and me["weapons"][1] is None and t < 60 and mode != "retreat":
+            if look is None and LOOT_SCAN and me["weapons"][1] is None and t < 25 and mode != "retreat":
                 if self.scan_yaw is None:
                     self.scan_yaw = me["aim"][0]
                 self.scan_yaw = wrap(self.scan_yaw + 0.45)
@@ -1356,7 +1314,7 @@ class Bot:
                 threats.append((d, p, tr.get("hp", 1400)))
         threats.sort(key=lambda q: q[0])
         threats = threats[:4]
-        mag = 1.0 if ((PRACTICE_TEMPO and not self.ffa) or (threats and threats[0][0] < 200)) else 0.38
+        mag = 1.0 if (threats and threats[0][0] < 200) else 0.38
         if self.mrm_dest is not None and t - self.mrm_t < MRM_PERIOD and hyp(self.mrm_dest[0] - x, self.mrm_dest[1] - y) > 3:
             return (self.mrm_dest[0], self.mrm_dest[1], mag)
         best, bs = None, 1e18
@@ -1520,7 +1478,7 @@ class Bot:
                 continue
             if dr["lands_in"] > eta + 6:
                 continue
-            if any(hyp(e["m"]["pos"][0] - px, e["m"]["pos"][1] - py) < (35 if (DROP_FIGHT and not self.ffa and hpf < 0.80) else (45 if DROP_RUSH else 70)) and (e["vis"] or not DROP_RUSH) for e in enemies):
+            if any(hyp(e["m"]["pos"][0] - px, e["m"]["pos"][1] - py) < (45 if DROP_RUSH else 70) and (e["vis"] or not DROP_RUSH) for e in enemies):
                 continue
             if dr.get("holder") not in (None, me["id"]):
                 continue
