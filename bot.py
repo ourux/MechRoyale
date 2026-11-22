@@ -239,10 +239,12 @@ FAST_LASER = 1.0           # release laser within 1 sim tick of full (lfull - 0.
 PRACTICE_TEMPO = 1.0       # practice: full walk speed in MRM, active roam+scan until 2nd weapon found, boost to laser
 ANTI_FLANK = 1.0           # push away from 1v2+ flankers (avoid 1.5x rear dmg) & kite rushing lightning bots
 LASER_RELOAD_AIM = 1.0     # aim at hitscan laser point while gun is reloading/out of range + rear_mult in LETHAL
+LASER_NO_OVERKILL = 1.0    # don't start a fresh laser charge on a 1-bullet enemy when loaded gun can finish it
+WALL_CLAMP_AIM = 1.0       # clamp gun lead out of solid walls & follow ground slope at lead point
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 75        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 76        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -446,11 +448,18 @@ class Bot:
                 tt = max(0.0, (d - 3.0) / speed)  # shot spawns 3 m out
         T = tt + lag
         px, py = tx + vx * T, ty + vy * T
+        if WALL_CLAMP_AIM and gun and self.map is not None and (vx or vy):
+            if self.map.blocked(px, py, tp[2], 1.0):
+                px, py = tx + vx * T * 0.45, ty + vy * T * 0.45
+                if self.map.blocked(px, py, tp[2], 1.0):
+                    px, py = tx, ty
         pz = tz
         if airborne:
             pz = tz + vz * T - 0.5 * g * T * T
             if self.map is not None:
                 pz = max(pz, self.map.surface(px, py, tp[2] + 1) + target_h)
+        elif WALL_CLAMP_AIM and self.map is not None and (vx or vy):
+            pz = self.map.surface(px, py, tp[2] + 1.5) + target_h
         dx, dy, dz = px - mx, py - my, pz - mz
         hd = hyp(dx, dy)
         yaw = math.atan2(dy, dx)
@@ -596,7 +605,8 @@ class Bot:
                 e["lone"] = others == 0
                 threat = (e["vis"] and d < AIMED_RANGE and e["lone"] and hpf > HUNT_HP) \
                     or (e["hot"] and d < 140) or (e["vis"] and d < 45) \
-                    or (e["vis"] and d < 110 and aimed_at_me(m))
+                    or (e["vis"] and d < 110 and aimed_at_me(m)) \
+                    or (e["vis"] and m.get("hp", 1400) < 300 and d < 150 and hpf > 0.45)
                 weak = False
             e["engage"] = bool(threat or weak)
 
@@ -915,7 +925,7 @@ class Bot:
                 hx, hy = fx + dx / dl * ring, fy + dy / dl * ring
             else:
                 hx, hy = fx, fy
-            if HUNT_LONE and self.ffa and M is not None:
+            if HUNT_LONE and self.ffa and hpf > HUNT_HP and alive > 5 and M is not None:
                 goal = self.hunt_goal(obs, me, (fx, fy, fr), t)
                 mode = "hunt"
                 if goal is not None and hyp(goal[0] - x, goal[1] - y) > 4:
@@ -982,10 +992,13 @@ class Bot:
             act["move"] = [round(math.cos(sy) * move_mag, 3), round(math.sin(sy) * move_mag, 3)]
         else:
             act["move"] = [0.0, 0.0]
+        if PRACTICE_TEMPO and not self.ffa and not boost and mode in ("loot", "drop", "hold") and move_mag >= 0.9 and energy > 75:
+            boost = True
         act["boost"] = bool(boost and act["move"] != [0.0, 0.0])
         act["jump"] = jump
 
         # ---- mortar dodge: shells we can see landing near us
+        mortar_dodged = False
         for pr in obs["projectiles"]:
             if pr["kind"] != "mortar":
                 continue
@@ -995,10 +1008,11 @@ class Bot:
                 a2, _ = self.steer(me, a, t)
                 act["move"] = [math.cos(a2), math.sin(a2)]
                 act["boost"] = energy > 10
+                mortar_dodged = True
                 break
 
         # ---- bullet / laser-charge dodge
-        if DODGE and mode not in ("unstuck", "duck") and not (REL_DODGE and outside_now):
+        if DODGE and not mortar_dodged and mode not in ("unstuck", "duck") and not (REL_DODGE and outside_now):
             st_ = me["stats"]
             my_sz = (1.0 + 0.05 * me.get("cubes", 0)) if REL_DODGE else 1.0
             cz_ = z + st_.get("height", 9.0) * my_sz * 0.52
@@ -1195,7 +1209,15 @@ class Bot:
                     else:
                         fire[laser_i] = True
                 elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode not in ("retreat", "duck"):
-                    fire[laser_i] = True
+                    overkill = False
+                    if LASER_NO_OVERKILL and kind == "mech" and target is not None and gun is not None and los_ok and dist < gun["stats"]["range"] * 0.95:
+                        if gun.get("ammo", 0) >= 2 and gun.get("reload", 0) <= 0:
+                            ccfg = self.cfg.get("cubes", {})
+                            gdmg = gun["stats"].get("damage", 45) * (1 + ccfg.get("damage_per_cube", 0) * min(me.get("cubes", 0), ccfg.get("stat_cap", 0)))
+                            if target["m"].get("hp", 1400) < gdmg * 1.15:
+                                overkill = True
+                    if not overkill:
+                        fire[laser_i] = True
                 elif laser.get("cooldown", 0) <= 0.05 and worth and l_los and ld < lrange * 0.97 and mode == "retreat" and ld > 60 and RETREAT_LASER:
                     fire[laser_i] = True
                 if kind == "mech" and laser_i is not None and (gun is None or (LASER_RELOAD_AIM and (gun.get("reload", 0) > 0.1 or dist > gun["stats"]["range"] * 0.98) and (charge > 0 or laser.get("cooldown", 0) <= 0.25) and l_los)):
