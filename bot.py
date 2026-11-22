@@ -230,10 +230,12 @@ REL_DODGE = 1.0      # relative-velocity bullet dodge (catches leaded shots), cu
 DROP_FIGHT = 1.0     # strafe inside nearby landed supply drops to cap full HP + 3 cubes mid-fight; rush drops when wounded
 ANISO_LASER = 1.0    # split horizontal/vertical cube-scaled laser release gate
 SMART_UPG = 1.0      # emergency plating pick when hpf < 0.55 for instant +210-290 HP mid-fight heal
+PRACTICE_NO_RETREAT = 1.0  # practice: never lock into no-laser retreat against shared-vision hunters (FFA unchanged)
+PRACTICE_FOCUS = 1.0       # practice: heavily prioritize finishing wounded visible hunters & stick to current target
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 68        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 69        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -261,6 +263,7 @@ class Bot:
         self.iso_t = -99.0
         self.charge_t = {}        # enemy id -> time laser charge started
         self.juke_dir = {}        # enemy id -> committed snap-juke sign (+1/-1)
+        self.last_tid = None      # last target id for focus-fire stickiness
         self.fspot, self.fspot_t, self.fspot_tid = None, -99.0, None
         self.last_dmg_bearing = None
         self.dmg_window = []      # (t, amount)
@@ -587,14 +590,20 @@ class Bot:
         if enemies:
             def score(e):
                 m = e["m"]
-                s = e["d"] + m.get("hp", 1400) / 12.0
+                mhp = m.get("hp", 1400)
+                s = e["d"] + mhp / (5.0 if (PRACTICE_FOCUS and not self.ffa) else 12.0)
                 if e["vis"]:
                     s -= 60
                 if e["hot"]:
                     s -= 50
                 if e.get("engage"):
                     s -= 100
-                if FINISH_BONUS and not self.ffa and e["vis"] and m.get("hp", 1400) < 0.35 * m.get("max_hp", 1400):
+                if PRACTICE_FOCUS and not self.ffa and e["vis"]:
+                    if m["id"] == self.last_tid and e["d"] < 160:
+                        s -= 45
+                    if mhp < 0.55 * m.get("max_hp", 1400):
+                        s -= 50
+                if FINISH_BONUS and not self.ffa and e["vis"] and mhp < 0.35 * m.get("max_hp", 1400):
                     s -= 80
                 if MATCHUP and e["vis"]:
                     mp = m["pos"]
@@ -611,10 +620,13 @@ class Bot:
             my_kinds = [w_["kind"] for w_ in weapons if w_]
             my_laser, my_light = "laser" in my_kinds, "lightning" in my_kinds
             target = min(enemies, key=score)
+            self.last_tid = target["m"]["id"]
 
         # ---- fight or flight
         my_eff = hp * (1 + 0.04 * min(me["cubes"], 10))
-        if target is not None:
+        if PRACTICE_NO_RETREAT and not self.ffa:
+            self.retreating = False
+        elif target is not None:
             th = target["m"].get("hp", 1400)
             outnumbered = sum(1 for e in enemies if e["d"] < 140 and (e["vis"] or e["hot"])) >= 2
             if not self.retreating:
@@ -668,8 +680,8 @@ class Bot:
             d = target["d"]
             bear = math.atan2(tp[1] - y, tp[0] - x)
             their = m.get("weapons", [])
-            if light is not None and "lightning" not in their and hpf > 0.45:
-                pref = 28.0
+            if light is not None and "lightning" not in their and (hpf > 0.45 or (PRACTICE_NO_RETREAT and not self.ffa)):
+                pref = 28.0 if hpf > 0.45 else 34.0
             elif "lightning" in their:
                 pref = max(PREF_RANGE_FFA if self.ffa else PREF_RANGE, 75.0)
             else:
