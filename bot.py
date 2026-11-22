@@ -161,9 +161,9 @@ UPGRADE_PRIORITY = [
 ]
 # practice duels reward killing faster; switched off once a free-for-all is detected
 UPGRADE_PRIORITY_PRACTICE = [
-    "gun_damage", "gun_mag", "laser_damage", "gun_rate", "laser_charge", "armor", "lightning_efficiency",
-    "nanites", "plating", "gun_velocity", "servos", "gyros", "capacitor", "reactor", "sensors",
-    "jets", "lightning_range", "lightning_chain", "laser_pierce", "mortar_reload",
+    "gun_damage", "gun_mag", "laser_damage", "laser_charge", "gun_rate", "plating", "armor",
+    "lightning_efficiency", "gun_velocity", "nanites", "servos", "gyros", "capacitor", "reactor",
+    "sensors", "jets", "lightning_range", "lightning_chain", "laser_pierce", "mortar_reload",
     "mortar_splash", "mortar_velocity",
 ]
 OFFENSE_IN_PRACTICE = 1.0
@@ -232,10 +232,14 @@ ANISO_LASER = 1.0    # split horizontal/vertical cube-scaled laser release gate
 SMART_UPG = 1.0      # emergency plating pick when hpf < 0.55 for instant +210-290 HP mid-fight heal
 PRACTICE_NO_RETREAT = 1.0  # practice: never lock into no-laser retreat against shared-vision hunters (FFA unchanged)
 PRACTICE_FOCUS = 1.0       # practice: heavily prioritize finishing wounded visible hunters & stick to current target
+CUBE_FIGHT = 1.0           # scoop nearby kill cubes & needed weapons during fight without stopping DPS or dodge
+ACTIVE_HUNTER = 1.0        # practice: engage chasing/aiming active hunters at 125-145 m without aggroing idle bots
+ZONE_STRAFE = 1.0          # stay in combat strafe with stronger zone pull while still safely inside current zone
+FAST_LASER = 1.0           # release laser within 1 sim tick of full (lfull - 0.055) to cut 50%-speed dwell time
 LETHAL = 1.0         # release a partial laser charge when it already kills the target
 THREAT_BOOST = 0.0  # boost while a foe is engaged or we were hit < 2.5 s ago, if energy above this (0: off)
 PRACTICE_LOOT = 1.0  # practice (no FFA seen): loot/crates/NPC farming all match, laser pickups x3 while we have none
-SEED_SALT = 71        # varies the bot's own random choices (strafe timing etc.); same play strength
+SEED_SALT = 72        # varies the bot's own random choices (strafe timing etc.); same play strength
 NOOK = 0.0          # 1: hold at the least-exposed spot near the hold point
 NOOK_R = 35.0    # 1: shoot back at a hot mech while breaking line of sight
 
@@ -436,7 +440,7 @@ class Bot:
             for _ in range(4):
                 px, py = tx + vx * (tt + lag), ty + vy * (tt + lag)
                 d = math.sqrt((px - mx) ** 2 + (py - my) ** 2 + (tz - mz) ** 2)
-                tt = max(0.0, d / speed - 0.012)  # shot spawns 3 m out
+                tt = max(0.0, (d - 3.0) / speed)  # shot spawns 3 m out
         T = tt + lag
         px, py = tx + vx * T, ty + vy * T
         pz = tz
@@ -474,7 +478,7 @@ class Bot:
         off = obs.get("offer")
         if off and off.get("choices"):
             ids = [c["id"] for c in off["choices"]]
-            if SMART_UPG and hpf < 0.55 and "plating" in ids:
+            if SMART_UPG and hpf < 0.65 and "plating" in ids:
                 bi = ids.index("plating")
             else:
                 best, bi = 999, 0
@@ -557,6 +561,14 @@ class Bot:
                 weak = others == 0 and not late
             if PRACTICE_ENGAGE and not self.ffa and e["vis"] and d < AIMED_RANGE:
                 threat = True
+            if ACTIVE_HUNTER and not self.ffa and e["vis"] and not threat and d < 145.0:
+                mp_ = m["pos"]
+                mv_ = m.get("vel", [0.0, 0.0, 0.0])
+                to_me_b = math.atan2(y - mp_[1], x - mp_[0])
+                aim_off = abs(wrap(m.get("aim", [9, 0])[0] - to_me_b))
+                close_spd = (mv_[0] * (x - mp_[0]) + mv_[1] * (y - mp_[1])) / max(1.0, d)
+                if (aim_off < 0.22 and d < 125.0) or (close_spd > 5.5 and aim_off < 0.30):
+                    threat = True
             if HEAL_FIRST and not self.ffa and hpf < HEAL_HP and t - self.last_dmg_t > 1.0 and d > 35:
                 threat = False   # heal up out of sight first; fight it when it comes close
             if PICK_FIGHTS and not self.ffa:
@@ -646,7 +658,7 @@ class Bot:
         mode = "hold"
         gx = gy = None
 
-        if outside_now or (zone_push and (target is None or d_future > fr + 40 or obs["zone"]["dps"] >= 60)):
+        if outside_now or (zone_push and (target is None or not target["engage"] or (not ZONE_STRAFE and (d_future > fr + 40 or obs["zone"]["dps"] >= 60)) or d_now > cr - 18.0)):
             mode = "zone"
             gx, gy = fx, fy
             boost = outside_now and energy > 25
@@ -745,12 +757,33 @@ class Bot:
                             vx_ += pull_ * dx_ / max(1.0, dd_)
                             vy_ += pull_ * dy_ / max(1.0, dd_)
                         break
+            # Mid-fight cube & needed-weapon scoop: grab fresh kill cubes (+4% HP heal + DMG + upgrade) without stopping fire!
+            if CUBE_FIGHT:
+                best_cf = None
+                if me["weapons"][1] is None:
+                    for p_ in obs["pickups"]:
+                        if self.wanted_pickup(p_["kind"], me) > 0 and abs(p_["pos"][2] - z) < 4.5 and t - self.take_fail.get(p_["id"], -99) >= 3:
+                            dp_ = hyp(p_["pos"][0] - x, p_["pos"][1] - y)
+                            if dp_ < 34.0 and (best_cf is None or dp_ < best_cf[0]):
+                                best_cf = (dp_, p_["pos"][0], p_["pos"][1], 1.25)
+                if best_cf is None and (hpf < 0.90 or me.get("cubes", 0) < 15):
+                    for c_ in obs["cubes"]:
+                        if abs(c_["pos"][2] - z) < 4.5:
+                            dc_ = hyp(c_["pos"][0] - x, c_["pos"][1] - y)
+                            if dc_ < 24.0 and (best_cf is None or dc_ < best_cf[0]):
+                                best_cf = (dc_, c_["pos"][0], c_["pos"][1], 1.05)
+                if best_cf is not None:
+                    dc_, cx_, cy_, pull_ = best_cf
+                    if dc_ > 2.0:
+                        vx_ += pull_ * (cx_ - x) / dc_
+                        vy_ += pull_ * (cy_ - y) / dc_
             # don't strafe out of the zone
             if d_future > fr * 0.8:
                 zx, zy = fx - x, fy - y
                 zl = max(1.0, hyp(zx, zy))
-                vx_ += 0.8 * zx / zl
-                vy_ += 0.8 * zy / zl
+                zw_ = 1.25 if (ZONE_STRAFE and zone_push) else 0.8
+                vx_ += zw_ * zx / zl
+                vy_ += zw_ * zy / zl
             move_yaw = math.atan2(vy_, vx_)
             boost = energy > FIGHT_BOOST_E and (t - self.last_dmg_t < 1.5)
             if COVER_FIGHT and M is not None:
@@ -1074,7 +1107,7 @@ class Bot:
                     los_ok = True
             err = self.aim_err(me, yaw, pitch)
             miss = err * dist
-            tol = AIM_TOL if kind == "mech" else 1.4
+            tol = AIM_TOL * (0.85 + 0.15 * target["sz"]) if (kind == "mech" and target is not None) else 1.4
             if gun is not None and los_ok and dist < gun["stats"]["range"] * 0.98 and miss < tol:
                 if gun.get("ammo", 1) > 0 and gun.get("reload", 0) <= 0:
                     fire[gun_i] = True
@@ -1113,7 +1146,7 @@ class Bot:
                         lethal = dmg * 0.8 >= target["m"]["hp"]
                     if RETREAT_DUMP and mode in ("retreat", "duck") and charge >= lst.get("min_charge", 0.15):
                         fire[laser_i] = False  # dump it: get full escape speed back
-                    elif (charge >= lfull * 0.97 or lethal) and l_los and l_aim_ok:
+                    elif ((charge >= lfull - 0.055 if FAST_LASER else charge >= lfull * 0.97) or lethal) and l_los and l_aim_ok:
                         fire[laser_i] = False  # release -> fire
                     elif charge > hold_max - 0.25 and l_los and lerr < 3.0:
                         fire[laser_i] = False
@@ -1196,7 +1229,7 @@ class Bot:
         if gun is not None and gun.get("reload", 0) <= 0:
             ammo = gun.get("ammo", 0)
             mag = gun["stats"].get("mag", 12)
-            if ammo == 0 or (ammo < mag * 0.5 and not fire[gun_i] and (target is None or not target["vis"])) or (TOPOFF and ammo < mag and not fire[gun_i] and target is None):
+            if ammo == 0 or (ammo < mag * (0.75 if TOPOFF else 0.5) and not fire[gun_i] and (target is None or not target["vis"])) or (TOPOFF and ammo < mag and not fire[gun_i] and target is None):
                 act["reload"] = True
 
         # ---- pickups
